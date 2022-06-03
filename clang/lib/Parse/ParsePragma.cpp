@@ -176,6 +176,18 @@ struct PragmaOpenMPHandler : public PragmaHandler {
                     Token &FirstToken) override;
 };
 
+struct PragmaNoNompHandler : public PragmaHandler {
+  PragmaNoNompHandler() : PragmaHandler("nomp") {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &FirstToken) override;
+};
+
+struct PragmaNompHandler : public PragmaHandler {
+  PragmaNompHandler() : PragmaHandler("nomp") {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &FirstToken) override;
+};
+
 /// PragmaCommentHandler - "\#pragma comment ...".
 struct PragmaCommentHandler : public PragmaHandler {
   PragmaCommentHandler(Sema &Actions)
@@ -417,6 +429,12 @@ void Parser::initializePragmaHandlers() {
     OpenMPHandler = std::make_unique<PragmaNoOpenMPHandler>();
   PP.AddPragmaHandler(OpenMPHandler.get());
 
+  if (getLangOpts().NOMP)
+    NompHandler = std::make_unique<PragmaNompHandler>();
+  else
+    NompHandler = std::make_unique<PragmaNoNompHandler>();
+  PP.AddPragmaHandler(NompHandler.get());
+
   if (getLangOpts().MicrosoftExt ||
       getTargetInfo().getTriple().isOSBinFormatELF()) {
     MSCommentHandler = std::make_unique<PragmaCommentHandler>(Actions);
@@ -527,6 +545,9 @@ void Parser::resetPragmaHandlers() {
   }
   PP.RemovePragmaHandler(OpenMPHandler.get());
   OpenMPHandler.reset();
+
+  PP.RemovePragmaHandler(NompHandler.get());
+  NompHandler.reset();
 
   if (getLangOpts().MicrosoftExt ||
       getTargetInfo().getTriple().isOSBinFormatELF()) {
@@ -2573,6 +2594,48 @@ void PragmaOpenMPHandler::HandlePragma(Preprocessor &PP,
                       /*DisableMacroExpansion=*/false, /*IsReinject=*/false);
 }
 
+/// Handle '#pragma nomp ...' when NOMP is disabled.
+///
+void PragmaNoNompHandler::HandlePragma(Preprocessor& PP,
+                                       PragmaIntroducer Introducer,
+                                       Token& FirstTok) {
+  if (!PP.getDiagnostics().isIgnored(diag::warn_pragma_nomp_ignored,
+                                     FirstTok.getLocation())) {
+    PP.Diag(FirstTok, diag::warn_pragma_nomp_ignored);
+    PP.getDiagnostics().setSeverity(diag::warn_pragma_nomp_ignored,
+                                    diag::Severity::Ignored, SourceLocation());
+  }
+  PP.DiscardUntilEndOfDirective();
+}
+
+/// Handle '#pragma nomp ...' when NOMP is enabled.
+///
+void PragmaNompHandler::HandlePragma(Preprocessor &PP,
+                                     PragmaIntroducer Introducer,
+                                     Token &FirstTok) {
+  SmallVector<Token, 16> Pragma;
+
+  Token tok;
+  tok.startToken();
+  tok.setKind(tok::annot_pragma_nomp);
+  tok.setLocation(Introducer.Loc);
+
+  while (tok.isNot(tok::eod) && tok.isNot(tok::eof)) {
+    Pragma.push_back(tok);
+    PP.Lex(tok);
+  }
+
+  tok.startToken();
+  tok.setKind(tok::annot_pragma_nomp_end);
+  tok.setLocation(tok.getLocation());
+  Pragma.push_back(tok);
+
+  auto toks = std::make_unique<Token[]>(Pragma.size());
+  std::copy(Pragma.begin(), Pragma.end(), toks.get());
+  PP.EnterTokenStream(std::move(toks), Pragma.size(),
+                      /*DisableMacroExpansion=*/false, /*IsReinject=*/false);
+}
+
 /// Handle '#pragma pointers_to_members'
 // The grammar for this pragma is as follows:
 //
@@ -3927,3 +3990,5 @@ void PragmaMaxTokensTotalHandler::HandlePragma(Preprocessor &PP,
 
   PP.overrideMaxTokens(MaxTokens, Loc);
 }
+
+#undef NOMP_MAX_CLAUSE_SIZE

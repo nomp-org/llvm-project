@@ -1474,6 +1474,10 @@ def warn_omp_more_one_omp_all_memory : Warning<
   "reserved locator 'omp_all_memory' cannot be specified more than once">,
   InGroup<OpenMPClauses>;
 
+// Pragma nomp suppor
+def warn_pragma_nomp_ignored : Warning<
+  "unexpected '#pragma nomp ... ' in program">, InGroup<NompWarningsAndErrors>, DefaultIgnore;
+
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<
   "missing argument; expected %select{an integer value|"

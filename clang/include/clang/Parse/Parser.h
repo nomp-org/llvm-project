@@ -181,6 +181,7 @@ class Parser : public CodeCompletionHandler {
   std::unique_ptr<PragmaHandler> FPContractHandler;
   std::unique_ptr<PragmaHandler> OpenCLExtensionHandler;
   std::unique_ptr<PragmaHandler> OpenMPHandler;
+  std::unique_ptr<PragmaHandler> NompHandler;
   std::unique_ptr<PragmaHandler> PCSectionHandler;
   std::unique_ptr<PragmaHandler> MSCommentHandler;
   std::unique_ptr<PragmaHandler> MSDetectMismatchHandler;
@@ -3324,6 +3325,13 @@ private:
   /// nullptr.
   //
   OMPClause *ParseOpenMPInteropClause(OpenMPClauseKind Kind, bool ParseOnly);
+
+  //===--------------------------------------------------------------------===//
+  // NOMP: Directives and clauses.
+  /// Parses declarative or executable directive.
+  ///
+  /// \param StmtCtx The context in which we're parsing the directive.
+  StmtResult ParseNOMPDirective(ParsedStmtContext StmtCtx);
 
 public:
   /// Parses simple expression in parens for single-expression clauses of OpenMP
