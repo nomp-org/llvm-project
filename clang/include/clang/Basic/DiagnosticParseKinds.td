@@ -1474,9 +1474,12 @@ def warn_omp_more_one_omp_all_memory : Warning<
   "reserved locator 'omp_all_memory' cannot be specified more than once">,
   InGroup<OpenMPClauses>;
 
-// Pragma nomp suppor
-def warn_pragma_nomp_ignored : Warning<
+// Nomp support
+def warn_nomp_pragma_ignored : Warning<
   "unexpected '#pragma nomp ... ' in program">, InGroup<NompWarningsAndErrors>, DefaultIgnore;
+def err_nomp_lparen_expected: Error<"'(' is expected after the nomp pragma %0 at line %1">;
+def err_nomp_rparen_expected: Error<"Expected a ')' at the end of line %0">;
+def err_nomp_invalid_directive: Error<"Invalid nomp directive at line %0">;
 
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<

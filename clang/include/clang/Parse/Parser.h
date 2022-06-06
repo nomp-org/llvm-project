@@ -3331,7 +3331,7 @@ private:
   /// Parses declarative or executable directive.
   ///
   /// \param StmtCtx The context in which we're parsing the directive.
-  StmtResult ParseNOMPDirective(ParsedStmtContext StmtCtx);
+  StmtResult ParseNompDirective(ParsedStmtContext StmtCtx);
 
 public:
   /// Parses simple expression in parens for single-expression clauses of OpenMP

@@ -414,7 +414,7 @@ Retry:
 
   case tok::annot_pragma_nomp:
     ProhibitAttributes(Attrs);
-    return ParseNOMPDirective(StmtCtx);
+    return ParseNompDirective(StmtCtx);
 
   case tok::annot_pragma_ms_pointers_to_members:
     ProhibitAttributes(Attrs);

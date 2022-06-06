@@ -252,7 +252,7 @@ LANGOPT(OpenMPThreadSubscription  , 1, 0, "Assume work-shared loops do not have 
 LANGOPT(OpenMPTeamSubscription  , 1, 0, "Assume distributed loops do not have more iterations than participating teams.")
 LANGOPT(OpenMPNoThreadState  , 1, 0, "Assume that no thread in a parallel region will modify an ICV.")
 LANGOPT(OpenMPOffloadMandatory  , 1, 0, "Assert that offloading is mandatory and do not create a host fallback.")
-LANGOPT(NOMP              , 32, 1, "Nomp support and version")
+LANGOPT(Nomp              , 32, 1, "Nomp support and version")
 LANGOPT(NoGPULib  , 1, 0, "Indicate a build without the standard GPU libraries.")
 LANGOPT(RenderScript      , 1, 0, "RenderScript")
 

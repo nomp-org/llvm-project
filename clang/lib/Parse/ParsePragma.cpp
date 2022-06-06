@@ -429,7 +429,7 @@ void Parser::initializePragmaHandlers() {
     OpenMPHandler = std::make_unique<PragmaNoOpenMPHandler>();
   PP.AddPragmaHandler(OpenMPHandler.get());
 
-  if (getLangOpts().NOMP)
+  if (getLangOpts().Nomp)
     NompHandler = std::make_unique<PragmaNompHandler>();
   else
     NompHandler = std::make_unique<PragmaNoNompHandler>();
@@ -2594,21 +2594,21 @@ void PragmaOpenMPHandler::HandlePragma(Preprocessor &PP,
                       /*DisableMacroExpansion=*/false, /*IsReinject=*/false);
 }
 
-/// Handle '#pragma nomp ...' when NOMP is disabled.
+/// Handle '#pragma nomp ...' when Nomp is disabled.
 ///
 void PragmaNoNompHandler::HandlePragma(Preprocessor& PP,
                                        PragmaIntroducer Introducer,
                                        Token& FirstTok) {
-  if (!PP.getDiagnostics().isIgnored(diag::warn_pragma_nomp_ignored,
+  if (!PP.getDiagnostics().isIgnored(diag::warn_nomp_pragma_ignored,
                                      FirstTok.getLocation())) {
-    PP.Diag(FirstTok, diag::warn_pragma_nomp_ignored);
-    PP.getDiagnostics().setSeverity(diag::warn_pragma_nomp_ignored,
+    PP.Diag(FirstTok, diag::warn_nomp_pragma_ignored);
+    PP.getDiagnostics().setSeverity(diag::warn_nomp_pragma_ignored,
                                     diag::Severity::Ignored, SourceLocation());
   }
   PP.DiscardUntilEndOfDirective();
 }
 
-/// Handle '#pragma nomp ...' when NOMP is enabled.
+/// Handle '#pragma nomp ...' when Nomp is enabled.
 ///
 void PragmaNompHandler::HandlePragma(Preprocessor &PP,
                                      PragmaIntroducer Introducer,
