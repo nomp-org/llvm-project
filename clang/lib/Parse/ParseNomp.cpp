@@ -24,41 +24,36 @@ enum NompDirectiveKind {
   NompFinalize = 3
 };
 
-StmtResult ParseNompInit(Parser &p, Token &tok, const SourceLocation &sLoc) {
+//==============================================================================
+// Helper functions
+//
+static Expr *TokToNompInitArg(Token &tok, const Parser &p) {
   Preprocessor &pp = p.getPreprocessor();
   SourceManager &sm = pp.getSourceManager();
-  Sema &sema = p.getActions();
-  ASTContext &ast = sema.getASTContext();
+  ASTContext &ctx = p.getActions().getASTContext();
 
-  pp.Lex(tok);
-
-  if (tok.isNot(tok::l_paren)) {
-    FullSourceLoc loc(tok.getLocation(), sm);
-    pp.Diag(tok, diag::err_nomp_lparen_expected)
-        << "init" << loc.getLineNumber();
+  FullSourceLoc loc(tok.getLocation(), sm);
+  tok::TokenKind TK = tok.getKind();
+  switch (TK) {
+  case tok::numeric_constant:
+    uint64_t val;
+    if (pp.parseSimpleIntegerLiteral(tok, val))
+      return IntegerLiteral::Create(ctx, llvm::APInt(32, val), ctx.IntTy,
+                                    tok.getLocation());
+    pp.Diag(tok, diag::err_nomp_integer_literal_expected)
+        << loc.getLineNumber() << loc.getColumnNumber();
+    break;
+  case tok::identifier:
+  case tok::comma:
+  case tok::r_paren:
+    break;
+  default:
+    pp.Diag(tok, diag::err_nomp_comma_expected)
+        << loc.getLineNumber() << loc.getColumnNumber();
+    break;
   }
-
-  while (tok.isNot(tok::annot_pragma_nomp_end))
-    pp.Lex(tok);
-
-  // if (tok.isNot(tok::annot_pragma_nomp_end)) {
-  //   FullSourceLoc loc(tok.getLocation(), sm);
-  //   pp.Diag(tok, diag::err_nomp_rparen_expected) << loc.getLineNumber();
-  // }
-
-  FunctionDecl *FD = NompFuncDecls[NompInit];
-  QualType QT = FD->getType();
-  DeclRefExpr *DRE = DeclRefExpr::Create(
-      ast, NestedNameSpecifierLoc(), SourceLocation(), FD, false, sLoc,
-      FD->getType(), ExprValueKind::VK_PRValue);
-
-  QualType PQT = ast.getPointerType(QT);
-  ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
-      ast, PQT, CastKind::CK_FunctionToPointerDecay, DRE, nullptr,
-      ExprValueKind::VK_PRValue, FPOptionsOverride());
-
-  return CallExpr::Create(ast, ICE, {}, FD->getCallResultType(),
-                          ExprValueKind::VK_PRValue, sLoc, FPOptionsOverride());
+  pp.Lex(tok);
+  return nullptr;
 }
 
 static inline NompDirectiveKind
@@ -79,6 +74,44 @@ GetNompFuncDeclKind(const llvm::StringRef name) {
       .Case("nomp_for", NompFor)
       .Case("nomp_finalize", NompFinalize)
       .Default(NompInvalid);
+}
+
+StmtResult ParseNompInit(Parser &p, Token &tok, const SourceLocation &sLoc) {
+  Preprocessor &pp = p.getPreprocessor();
+  SourceManager &sm = pp.getSourceManager();
+  Sema &sema = p.getActions();
+  ASTContext &ast = sema.getASTContext();
+
+  pp.Lex(tok);
+
+  if (tok.isNot(tok::l_paren)) {
+    FullSourceLoc loc(tok.getLocation(), sm);
+    pp.Diag(tok, diag::err_nomp_lparen_expected)
+        << "init" << loc.getLineNumber();
+  }
+
+  llvm::SmallVector<Expr *, 16> FArgs;
+  pp.Lex(tok);
+  while (tok.isNot(tok::annot_pragma_nomp_end))
+    if (Expr *E = TokToNompInitArg(tok, p))
+      FArgs.push_back(E);
+
+  // FIXME: Check for tok::r_paren
+
+  FunctionDecl *FD = NompFuncDecls[NompInit];
+  QualType QT = FD->getType();
+  DeclRefExpr *DRE = DeclRefExpr::Create(
+      ast, NestedNameSpecifierLoc(), SourceLocation(), FD, false, sLoc,
+      FD->getType(), ExprValueKind::VK_PRValue);
+
+  QualType PQT = ast.getPointerType(QT);
+  ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
+      ast, PQT, CastKind::CK_FunctionToPointerDecay, DRE, nullptr,
+      ExprValueKind::VK_PRValue, FPOptionsOverride());
+
+  return CallExpr::Create(ast, ICE, ArrayRef<Expr *>(FArgs),
+                          FD->getCallResultType(), ExprValueKind::VK_PRValue,
+                          sLoc, FPOptionsOverride());
 }
 
 /// Parsing of NOMP directives.

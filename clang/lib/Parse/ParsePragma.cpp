@@ -3990,5 +3990,3 @@ void PragmaMaxTokensTotalHandler::HandlePragma(Preprocessor &PP,
 
   PP.overrideMaxTokens(MaxTokens, Loc);
 }
-
-#undef NOMP_MAX_CLAUSE_SIZE

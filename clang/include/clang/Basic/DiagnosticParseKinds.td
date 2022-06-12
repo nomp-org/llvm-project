@@ -1479,6 +1479,8 @@ def warn_nomp_pragma_ignored : Warning<
   "unexpected '#pragma nomp ... ' in program">, InGroup<NompWarningsAndErrors>, DefaultIgnore;
 def err_nomp_lparen_expected: Error<"'(' is expected after the nomp pragma %0 at line %1">;
 def err_nomp_rparen_expected: Error<"Expected a ')' at the end of line %0">;
+def err_nomp_comma_expected: Error<"Expected a ',' at line %0, column %1">;
+def err_nomp_integer_literal_expected: Error<"Expected an integer literal at line %0, column %1">;
 def err_nomp_invalid_directive: Error<"Invalid nomp directive at line %0">;
 
 // Pragma loop support.
