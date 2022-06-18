@@ -3331,6 +3331,7 @@ private:
   /// Parses declarative or executable directive.
   ///
   /// \param StmtCtx The context in which we're parsing the directive.
+  StmtResult ParseNompInit(SourceLocation &sLoc);
   StmtResult ParseNompDirective(ParsedStmtContext StmtCtx);
 
 public:
