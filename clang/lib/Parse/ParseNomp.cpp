@@ -177,6 +177,35 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
                           SL, FPOptionsOverride());
 }
 
+StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
+  Preprocessor &pp = getPreprocessor();
+  SourceManager &sm = pp.getSourceManager();
+  Sema &sema = getActions();
+  ASTContext &ast = sema.getASTContext();
+
+  PP.Lex(Tok);
+  if (Tok.isNot(tok::annot_pragma_nomp_end)) {
+    FullSourceLoc loc(Tok.getLocation(), sm);
+    pp.Diag(Tok, diag::err_nomp_invalid_token)
+        << loc.getLineNumber() << loc.getColumnNumber();
+  } else {
+    ConsumeAnnotationToken();
+  }
+
+  FunctionDecl *FD = NompFuncDecls[NompFinalize];
+  QualType QT = FD->getType();
+  DeclRefExpr *DRE =
+      DeclRefExpr::Create(ast, NestedNameSpecifierLoc(), SourceLocation(), FD,
+                          false, SL, FD->getType(), ExprValueKind::VK_PRValue);
+
+  QualType PQT = ast.getPointerType(QT);
+  ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
+      ast, PQT, CastKind::CK_FunctionToPointerDecay, DRE, nullptr,
+      ExprValueKind::VK_PRValue, FPOptionsOverride());
+
+  return CallExpr::Create(ast, ICE, ArrayRef<Expr *>(), FD->getCallResultType(),
+                          ExprValueKind::VK_PRValue, SL, FPOptionsOverride());
+}
 //==============================================================================
 // Parsing of NOMP directives.
 //
@@ -232,6 +261,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   case NompFor:
     break;
   case NompFinalize:
+    result = ParseNompFinalize(SL);
     break;
   case NompInvalid:
     break;
