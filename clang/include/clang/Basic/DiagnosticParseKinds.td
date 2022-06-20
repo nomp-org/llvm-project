@@ -1483,6 +1483,8 @@ def err_nomp_comma_expected: Error<"Expected a ',' at line %0, column %1">;
 def err_nomp_integer_literal_expected: Error<"Expected an integer literal at line %0, column %1">;
 def err_nomp_invalid_token: Error<"Invalid nomp token at line %0, column %1">;
 def err_nomp_invalid_directive: Error<"Invalid nomp directive at line %0">;
+def err_nomp_invalid_number_of_args: Error<
+  "Only %0 argument(s) given to nomp %1 which expects %2 arguments at line %3">;
 
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<

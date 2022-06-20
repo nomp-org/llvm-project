@@ -111,7 +111,7 @@ GetNompFuncDeclKind(const llvm::StringRef name) {
 //==============================================================================
 // Helper functions
 //
-StmtResult Parser::ParseNompInit(SourceLocation &SL) {
+StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
   Preprocessor &pp = getPreprocessor();
   SourceManager &sm = pp.getSourceManager();
   Sema &sema = getActions();
@@ -122,25 +122,27 @@ StmtResult Parser::ParseNompInit(SourceLocation &SL) {
     FullSourceLoc loc(Tok.getLocation(), sm);
     pp.Diag(Tok, diag::err_nomp_lparen_expected)
         << "init" << loc.getLineNumber() << loc.getColumnNumber();
+  } else {
+    ConsumeToken(); // tok::l_paren
   }
-  ConsumeToken();
 
   llvm::SmallVector<Expr *, 16> ExprArgs;
-  ExprResult ER = ParseExpression();
-  if (ER.isUsable()) {
-    Expr *E = ER.getAs<Expr>();
-    // TODO: Check if the binary operator is the comma operator
-    if (BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
-      // LHS it self must be a binary operator
-      if (BinaryOperator *LHS = dyn_cast<BinaryOperator>(BO->getLHS())) {
-        ExprArgs.push_back(LHS->getLHS());
-        ExprArgs.push_back(LHS->getRHS());
+  int NumArgs = 0;
+  while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
+    ExprResult LHS = ParseAssignmentExpression();
+    ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
+    if (ER.isUsable()) {
+      ExprArgs.push_back(ER.getAs<Expr>());
+      NumArgs++;
+    }
+    if (Tok.isNot(tok::r_paren)) {
+      if (Tok.isNot(tok::comma)) {
+        FullSourceLoc loc(Tok.getLocation(), sm);
+        pp.Diag(Tok, diag::err_nomp_comma_expected)
+            << loc.getLineNumber() << loc.getColumnNumber();
       } else {
-        // TODO: Error
+        ConsumeToken();
       }
-      ExprArgs.push_back(BO->getRHS());
-    } else {
-      // TODO: Error
     }
   }
 
@@ -148,9 +150,16 @@ StmtResult Parser::ParseNompInit(SourceLocation &SL) {
     FullSourceLoc loc(Tok.getLocation(), sm);
     pp.Diag(Tok, diag::err_nomp_rparen_expected)
         << "init" << loc.getLineNumber() << loc.getColumnNumber();
+  } else {
+    ConsumeToken(); // tok:r_paren
   }
-  ConsumeToken();
-  ConsumeAnnotationToken();
+  ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
+
+  if (NumArgs != 3) {
+    FullSourceLoc loc(SL, sm);
+    pp.Diag(Tok, diag::err_nomp_invalid_number_of_args)
+        << NumArgs << "init" << 3 << loc.getLineNumber();
+  }
 
   FunctionDecl *FD = NompFuncDecls[NompInit];
   QualType QT = FD->getType();
@@ -202,7 +211,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
     }
   }
 
-  SourceLocation sLoc = Tok.getLocation();
+  SourceLocation SL = Tok.getLocation();
   NompDirectiveKind directive = NompInvalid;
   pp.Lex(Tok);
   if (Tok.is(tok::identifier))
@@ -216,7 +225,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   StmtResult result = StmtEmpty();
   switch (directive) {
   case NompInit:
-    result = ParseNompInit(sLoc);
+    result = ParseNompInit(SL);
     break;
   case NompUpdate:
     break;
