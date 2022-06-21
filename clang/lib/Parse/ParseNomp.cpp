@@ -1,3 +1,15 @@
+//===--- ParseNomp.cpp - Nomp directives parsing ----------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+/// \file
+/// This file implements parsing of all Nomp directives and clauses.
+///
+//===----------------------------------------------------------------------===//
+
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
@@ -25,8 +37,16 @@ enum NompDirectiveKind {
   NompFinalize = 3
 };
 
+enum NompUpdateDirection {
+  NompUpdateInvalid = -1,
+  NompUpdateTo = 0,
+  NompUpdateFrom = 1,
+  NompUpdateAlloc = 2,
+  NompUpdateFree = 3
+};
+
 //==============================================================================
-// Helper functions
+// Helper functions: String to Nomp types conversion
 //
 static inline NompDirectiveKind
 GetNompDirectiveKind(const llvm::StringRef name) {
@@ -48,68 +68,118 @@ GetNompFuncDeclKind(const llvm::StringRef name) {
       .Default(NompInvalid);
 }
 
-// static Expr *ParseNompInitArg(Token &tok, const Parser &p) {
-//   Preprocessor &pp = p.getPreprocessor();
-//   SourceManager &sm = pp.getSourceManager();
-//   Sema &sema = p.getActions();
-//   ASTContext &ctx = sema.getASTContext();
-//
-//   DeclContext::lookup_result result;
-//   DeclRefExpr *DRE;
-//
-//   FullSourceLoc loc(tok.getLocation(), sm);
-//   tok::TokenKind TK = tok.getKind();
-//   switch (TK) {
-//   case tok::numeric_constant:
-//     uint64_t val;
-//     if (pp.parseSimpleIntegerLiteral(tok, val))
-//       return IntegerLiteral::Create(ctx, llvm::APInt(32, val), ctx.IntTy,
-//                                     tok.getLocation());
-//     pp.Diag(tok, diag::err_nomp_integer_literal_expected)
-//         << loc.getLineNumber() << loc.getColumnNumber();
-//     break;
-//   case tok::identifier:
-//     // Check for the declation of the identifier in current FunctionDecl.
-//     // If not found, check on the translationUnitDecl. If not found in
-//     either,
-//     // it's an error.
-//     result = sema.getFunctionLevelDeclContext()->lookup(
-//         DeclarationName(tok.getIdentifierInfo()));
-//     if (result.empty())
-//       result = ctx.getTranslationUnitDecl()->lookup(
-//           DeclarationName(tok.getIdentifierInfo()));
-//     if (!result.empty()) {
-//       if (result.isSingleResult()) {
-//         VarDecl *VD = result.find_first<VarDecl>();
-//         DRE = DeclRefExpr::Create(
-//             ctx, NestedNameSpecifierLoc(), SourceLocation(), VD, false,
-//             tok.getLocation(), VD->getType(), ExprValueKind::VK_PRValue);
-//         pp.Lex(tok);
-//         return ImplicitCastExpr::Create(
-//             ctx, VD->getType(), CastKind::CK_LValueToRValue, DRE, nullptr,
-//             ExprValueKind::VK_PRValue, FPOptionsOverride());
-//       } else {
-//         // Error ! Don't know what to do !
-//         std::cout << "Don't know what to do !\n";
-//       }
-//     }
-//     std::cout << "Token not found !\n";
-//     // Error ! Not found !
-//     break;
-//   case tok::comma:
-//   case tok::r_paren:
-//     break;
-//   default:
-//     pp.Diag(tok, diag::err_nomp_invalid_token)
-//         << loc.getLineNumber() << loc.getColumnNumber();
-//     break;
-//   }
-//   pp.Lex(tok);
-//   return nullptr;
-// }
+static inline NompUpdateDirection
+GetNompUpdateDirection(const llvm::StringRef dirn) {
+  return llvm::StringSwitch<NompUpdateDirection>(dirn)
+      .Case("to", NompUpdateTo)
+      .Case("from", NompUpdateFrom)
+      .Case("alloc", NompUpdateAlloc)
+      .Case("free", NompUpdateFree)
+      .Default(NompUpdateInvalid);
+}
 
 //==============================================================================
-// Helper functions
+// Helper functions: Tokens to Clang Stmt conversions
+//
+static bool GetVariableAsFuncArg(ImplicitCastExpr *&ICE, Token &tok,
+                                 Parser &p) {
+  Preprocessor &pp = p.getPreprocessor();
+  SourceManager &sm = pp.getSourceManager();
+  Sema &sema = p.getActions();
+  ASTContext &ast = sema.getASTContext();
+
+  FullSourceLoc loc(tok.getLocation(), sm);
+  tok::TokenKind TK = tok.getKind();
+  if (TK != tok::identifier) {
+    // If the token is not an identifier, it is an error
+    pp.Diag(tok, diag::err_nomp_identifier_expected)
+        << loc.getLineNumber() << loc.getColumnNumber();
+    p.SkipUntil(tok::annot_pragma_nomp_end);
+  } else {
+    // Check for the declation of the identifier in current scope and
+    // If not found, check on the translation Unit scope. If not found
+    // in thre either, it's an error.
+    DeclarationName DN = DeclarationName(tok.getIdentifierInfo());
+    VarDecl *VD = dyn_cast_or_null<VarDecl>(
+        sema.LookupSingleName(p.getCurScope(), DN, SourceLocation(),
+                              Sema::LookupNameKind::LookupOrdinaryName));
+    if (!VD)
+      VD = dyn_cast_or_null<VarDecl>(
+          sema.LookupSingleName(sema.TUScope, DN, SourceLocation(),
+                                Sema::LookupNameKind::LookupOrdinaryName));
+
+    if (VD) {
+      DeclRefExpr *DRE = DeclRefExpr::Create(
+          ast, NestedNameSpecifierLoc(), SourceLocation(), VD, false,
+          tok.getLocation(), VD->getType(), ExprValueKind::VK_PRValue);
+      ICE = ImplicitCastExpr::Create(
+          ast, VD->getType(), CastKind::CK_LValueToRValue, DRE, nullptr,
+          ExprValueKind::VK_PRValue, FPOptionsOverride());
+      return true;
+    }
+
+    // Variable declaration not found
+    pp.Diag(tok, diag::err_nomp_no_vardecl_found)
+        << DN.getAsString() << loc.getLineNumber() << loc.getColumnNumber();
+  }
+
+  return false;
+}
+
+static CallExpr *CreateCallExpr(const ASTContext &AST, const SourceLocation &SL,
+                                llvm::ArrayRef<Expr *> Args, FunctionDecl *FD) {
+  DeclRefExpr *DRE =
+      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), FD,
+                          false, SL, FD->getType(), ExprValueKind::VK_PRValue);
+
+  ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
+      AST, AST.getPointerType(FD->getType()),
+      CastKind::CK_FunctionToPointerDecay, DRE, nullptr,
+      ExprValueKind::VK_PRValue, FPOptionsOverride());
+
+  return CallExpr::Create(AST, ICE, Args, FD->getCallResultType(),
+                          ExprValueKind::VK_PRValue, SL, FPOptionsOverride());
+}
+
+int Parser::ParseNompExpr(llvm::SmallVector<Expr *, 16> &ExprList) {
+  ExprResult LHS = ParseAssignmentExpression();
+  ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
+  if (ER.isUsable()) {
+    Expr *E = ER.getAs<Expr>();
+    ExprList.push_back(E);
+    return 0;
+  }
+  return 1;
+}
+
+void Parser::ParseNompExprListUntilRParen(
+    llvm::SmallVector<Expr *, 16> &ExprList, llvm::StringRef Pragma) {
+  Preprocessor &pp = getPreprocessor();
+  SourceManager &sm = pp.getSourceManager();
+
+  while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
+    ParseNompExpr(ExprList);
+    if (Tok.isNot(tok::r_paren)) {
+      if (Tok.isNot(tok::comma)) {
+        FullSourceLoc loc(Tok.getLocation(), sm);
+        pp.Diag(Tok, diag::err_nomp_comma_expected)
+            << Pragma << loc.getLineNumber() << loc.getColumnNumber();
+      } else {
+        ConsumeToken();
+      }
+    }
+  }
+
+  if (!TryConsumeToken(tok::r_paren)) {
+    FullSourceLoc loc(Tok.getLocation(), sm);
+    pp.Diag(Tok, diag::err_nomp_rparen_expected)
+        << Pragma << loc.getLineNumber() << loc.getColumnNumber();
+    SkipUntil(tok::annot_pragma_nomp_end);
+  }
+}
+
+//==============================================================================
+// Parse and generate calls for Nomp API functions
 //
 StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
   Preprocessor &pp = getPreprocessor();
@@ -117,64 +187,118 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
   Sema &sema = getActions();
   ASTContext &ast = sema.getASTContext();
 
-  pp.Lex(Tok);
-  if (Tok.isNot(tok::l_paren)) {
+  // "("
+  if (!TryConsumeToken(tok::l_paren)) {
     FullSourceLoc loc(Tok.getLocation(), sm);
     pp.Diag(Tok, diag::err_nomp_lparen_expected)
         << "init" << loc.getLineNumber() << loc.getColumnNumber();
-  } else {
-    ConsumeToken(); // tok::l_paren
   }
 
-  llvm::SmallVector<Expr *, 16> ExprArgs;
-  int NumArgs = 0;
-  while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
-    ExprResult LHS = ParseAssignmentExpression();
-    ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
-    if (ER.isUsable()) {
-      ExprArgs.push_back(ER.getAs<Expr>());
-      NumArgs++;
-    }
-    if (Tok.isNot(tok::r_paren)) {
-      if (Tok.isNot(tok::comma)) {
-        FullSourceLoc loc(Tok.getLocation(), sm);
-        pp.Diag(Tok, diag::err_nomp_comma_expected)
-            << loc.getLineNumber() << loc.getColumnNumber();
-      } else {
-        ConsumeToken();
-      }
-    }
-  }
-
-  if (Tok.isNot(tok::r_paren)) {
-    FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_rparen_expected)
-        << "init" << loc.getLineNumber() << loc.getColumnNumber();
-  } else {
-    ConsumeToken(); // tok:r_paren
-  }
+  llvm::SmallVector<Expr *, 16> CallArgs;
+  ParseNompExprListUntilRParen(CallArgs, "init");
   ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
 
-  if (NumArgs != 3) {
+  if (CallArgs.size() != 3) {
     FullSourceLoc loc(SL, sm);
     pp.Diag(Tok, diag::err_nomp_invalid_number_of_args)
-        << NumArgs << "init" << 3 << loc.getLineNumber();
+        << CallArgs.size() << "init" << 3 << loc.getLineNumber();
   }
 
-  FunctionDecl *FD = NompFuncDecls[NompInit];
-  QualType QT = FD->getType();
-  DeclRefExpr *DRE =
-      DeclRefExpr::Create(ast, NestedNameSpecifierLoc(), SourceLocation(), FD,
-                          false, SL, FD->getType(), ExprValueKind::VK_PRValue);
+  return CreateCallExpr(ast, SL, ArrayRef<Expr *>(CallArgs),
+                        NompFuncDecls[NompInit]);
+}
 
-  QualType PQT = ast.getPointerType(QT);
-  ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
-      ast, PQT, CastKind::CK_FunctionToPointerDecay, DRE, nullptr,
-      ExprValueKind::VK_PRValue, FPOptionsOverride());
+StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
+  Preprocessor &PP = getPreprocessor();
+  SourceManager &SM = PP.getSourceManager();
+  ASTContext &AST = getActions().getASTContext();
 
-  return CallExpr::Create(ast, ICE, ArrayRef<Expr *>(ExprArgs),
-                          FD->getCallResultType(), ExprValueKind::VK_PRValue,
-                          SL, FPOptionsOverride());
+  // "("
+  if (!TryConsumeToken(tok::l_paren)) {
+    FullSourceLoc loc(Tok.getLocation(), SM);
+    PP.Diag(Tok, diag::err_nomp_lparen_expected)
+        << "update" << loc.getLineNumber() << loc.getColumnNumber();
+  }
+
+  // Direction: "to", "from", "alloc", "free"
+  NompUpdateDirection dirn = NompUpdateInvalid;
+  if (Tok.is(tok::identifier))
+    dirn = GetNompUpdateDirection(Tok.getIdentifierInfo()->getName());
+
+  if (dirn == NompUpdateInvalid) {
+    FullSourceLoc loc(Tok.getLocation(), SM);
+    PP.Diag(Tok, diag::err_nomp_invalid_update_direction)
+        << loc.getLineNumber() << loc.getColumnNumber();
+  } else {
+    ConsumeToken();
+  }
+
+  // ":"
+  if (!TryConsumeToken(tok::colon)) {
+    FullSourceLoc loc(Tok.getLocation(), SM);
+    PP.Diag(Tok, diag::err_nomp_colon_expected)
+        << "update" << loc.getLineNumber() << loc.getColumnNumber();
+  }
+
+  llvm::SmallVector<Stmt *, 16> FuncCalls;
+  llvm::SmallVector<Expr *, 16> FuncArgs;
+  while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
+    FuncArgs.clear();
+    SourceLocation TL = Tok.getLocation();
+
+    // Array pointer
+    ImplicitCastExpr *ICE;
+    if (!GetVariableAsFuncArg(ICE, Tok, *this)) {
+      SkipUntil(tok::annot_pragma_nomp_end);
+      return StmtEmpty();
+    }
+    ConsumeToken();
+    FuncArgs.push_back(ICE);
+
+    // Start offset
+    if (!TryConsumeToken(tok::l_square)) {
+      FullSourceLoc loc(Tok.getLocation(), SM);
+      PP.Diag(Tok, diag::err_nomp_lsquare_expected)
+          << "update" << loc.getLineNumber() << loc.getColumnNumber();
+      SkipUntil(tok::annot_pragma_nomp_end);
+      return StmtEmpty();
+    }
+    ParseNompExpr(FuncArgs);
+
+    // End offset
+    if (!TryConsumeToken(tok::comma)) {
+      FullSourceLoc loc(Tok.getLocation(), SM);
+      PP.Diag(Tok, diag::err_nomp_comma_expected)
+          << "update" << loc.getLineNumber() << loc.getColumnNumber();
+      SkipUntil(tok::annot_pragma_nomp_end);
+      return StmtEmpty();
+    }
+    ParseNompExpr(FuncArgs);
+
+    if (!TryConsumeToken(tok::r_square)) {
+      FullSourceLoc loc(Tok.getLocation(), SM);
+      PP.Diag(Tok, diag::err_nomp_rsquare_expected)
+          << "update" << loc.getLineNumber() << loc.getColumnNumber();
+      SkipUntil(tok::annot_pragma_nomp_end);
+      return StmtEmpty();
+    }
+
+    TryConsumeToken(tok::comma);
+    FuncCalls.push_back(
+        CreateCallExpr(AST, TL, FuncArgs, NompFuncDecls[NompUpdate]));
+  }
+
+  if (!TryConsumeToken(tok::r_paren)) {
+    FullSourceLoc loc(Tok.getLocation(), SM);
+    PP.Diag(Tok, diag::err_nomp_rparen_expected)
+        << "update" << loc.getLineNumber() << loc.getColumnNumber();
+    SkipUntil(tok::annot_pragma_nomp_end);
+    return StmtEmpty();
+  }
+
+  SourceLocation EL = Tok.getLocation();
+  SkipUntil(tok::annot_pragma_nomp_end);
+  return CompoundStmt::Create(AST, ArrayRef<Stmt *>(FuncCalls), SL, EL);
 }
 
 StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
@@ -183,29 +307,18 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
   Sema &sema = getActions();
   ASTContext &ast = sema.getASTContext();
 
-  PP.Lex(Tok);
   if (Tok.isNot(tok::annot_pragma_nomp_end)) {
     FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_invalid_token)
-        << loc.getLineNumber() << loc.getColumnNumber();
+    pp.Diag(Tok, diag::err_nomp_eod_expected)
+        << "finalize" << loc.getLineNumber() << loc.getColumnNumber();
   } else {
     ConsumeAnnotationToken();
   }
 
-  FunctionDecl *FD = NompFuncDecls[NompFinalize];
-  QualType QT = FD->getType();
-  DeclRefExpr *DRE =
-      DeclRefExpr::Create(ast, NestedNameSpecifierLoc(), SourceLocation(), FD,
-                          false, SL, FD->getType(), ExprValueKind::VK_PRValue);
-
-  QualType PQT = ast.getPointerType(QT);
-  ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
-      ast, PQT, CastKind::CK_FunctionToPointerDecay, DRE, nullptr,
-      ExprValueKind::VK_PRValue, FPOptionsOverride());
-
-  return CallExpr::Create(ast, ICE, ArrayRef<Expr *>(), FD->getCallResultType(),
-                          ExprValueKind::VK_PRValue, SL, FPOptionsOverride());
+  return CreateCallExpr(ast, SL, ArrayRef<Expr *>(),
+                        NompFuncDecls[NompFinalize]);
 }
+
 //==============================================================================
 // Parsing of NOMP directives.
 //
@@ -226,9 +339,9 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
 
   if (numNompFuncDecls == 0) {
     ASTContext &ast = this->getActions().getASTContext();
-    TranslationUnitDecl *tuDecl = ast.getTranslationUnitDecl();
-    DeclContext *dCtx = tuDecl->castToDeclContext(tuDecl);
-    for (auto d = dCtx->decls_begin(); d != dCtx->decls_end(); d++) {
+    TranslationUnitDecl *TUD = ast.getTranslationUnitDecl();
+    DeclContext *DC = TUD->castToDeclContext(TUD);
+    for (auto d = DC->decls_begin(); d != DC->decls_end(); d++) {
       if (FunctionDecl *decl = dyn_cast<FunctionDecl>(*d)) {
         NompDirectiveKind directive =
             GetNompFuncDeclKind(decl->getNameInfo().getAsString());
@@ -249,6 +362,8 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   if (directive == NompInvalid) {
     FullSourceLoc loc(Tok.getLocation(), sm);
     pp.Diag(Tok, diag::err_nomp_invalid_directive) << loc.getLineNumber();
+  } else {
+    ConsumeToken();
   }
 
   StmtResult result = StmtEmpty();
@@ -257,6 +372,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
     result = ParseNompInit(SL);
     break;
   case NompUpdate:
+    result = ParseNompUpdate(SL);
     break;
   case NompFor:
     break;

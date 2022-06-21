@@ -3331,8 +3331,12 @@ private:
   /// Parses declarative or executable directive.
   ///
   /// \param StmtCtx The context in which we're parsing the directive.
+  int ParseNompExpr(llvm::SmallVector<Expr *, 16> &ExprList);
+  void ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &ExprList,
+                                    llvm::StringRef Pragma);
   StmtResult ParseNompInit(const SourceLocation &sLoc);
   StmtResult ParseNompFinalize(const SourceLocation &sLoc);
+  StmtResult ParseNompUpdate(const SourceLocation &sLoc);
   StmtResult ParseNompDirective(ParsedStmtContext StmtCtx);
 
 public:
