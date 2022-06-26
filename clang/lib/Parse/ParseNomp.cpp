@@ -81,8 +81,8 @@ GetNompUpdateDirection(const llvm::StringRef dirn) {
 //==============================================================================
 // Helper functions: Tokens to Clang Stmt conversions
 //
-static bool GetVariableAsFuncArg(ImplicitCastExpr *&ICE, Token &tok,
-                                 Parser &p) {
+static bool GetVariableAsFuncArg(ImplicitCastExpr *&ICE, VarDecl *&VD,
+                                 Token &tok, Parser &p) {
   Preprocessor &pp = p.getPreprocessor();
   SourceManager &sm = pp.getSourceManager();
   Sema &sema = p.getActions();
@@ -100,7 +100,7 @@ static bool GetVariableAsFuncArg(ImplicitCastExpr *&ICE, Token &tok,
     // If not found, check on the translation Unit scope. If not found
     // in thre either, it's an error.
     DeclarationName DN = DeclarationName(tok.getIdentifierInfo());
-    VarDecl *VD = dyn_cast_or_null<VarDecl>(
+    VD = dyn_cast_or_null<VarDecl>(
         sema.LookupSingleName(p.getCurScope(), DN, SourceLocation(),
                               Sema::LookupNameKind::LookupOrdinaryName));
     if (!VD)
@@ -248,7 +248,16 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
     // Array pointer
     ImplicitCastExpr *ICE;
-    if (!GetVariableAsFuncArg(ICE, Tok, *this)) {
+    VarDecl *VD;
+    if (!GetVariableAsFuncArg(ICE, VD, Tok, *this)) {
+      SkipUntil(tok::annot_pragma_nomp_end);
+      return StmtEmpty();
+    }
+    const Type *T = ICE->getType().getTypePtr();
+    if (!T->isPointerType()) {
+      FullSourceLoc loc(Tok.getLocation(), SM);
+      PP.Diag(Tok, diag::err_nomp_pointer_type_expected)
+          << "update" << loc.getLineNumber() << loc.getColumnNumber();
       SkipUntil(tok::annot_pragma_nomp_end);
       return StmtEmpty();
     }
@@ -283,9 +292,16 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
       return StmtEmpty();
     }
 
-    TryConsumeToken(tok::comma);
+    // UETT_SizeOf
+    QualType CT = T->getPointeeOrArrayElementType()->getCanonicalTypeInternal();
+    std::cout << "CT: " << CT.getAsString() << "\n";
+    UnaryExprOrTypeTraitExpr *UETT = new (AST) UnaryExprOrTypeTraitExpr(
+        UETT_SizeOf, AST.getTrivialTypeSourceInfo(CT), AST.getSizeType(),
+        SourceLocation(), SourceLocation());
+    FuncArgs.push_back(UETT);
     FuncCalls.push_back(
         CreateCallExpr(AST, TL, FuncArgs, NompFuncDecls[NompUpdate]));
+    TryConsumeToken(tok::comma);
   }
 
   if (!TryConsumeToken(tok::r_paren)) {
