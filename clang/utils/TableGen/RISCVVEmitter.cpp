@@ -217,7 +217,7 @@ void RVVEmitter::createHeader(raw_ostream &OS) {
   for (int Log2LMUL : Log2LMULs) {
     auto T = RVVType::computeType(BasicType::Int8, Log2LMUL,
                                   PrototypeDescriptor::Mask);
-    if (T.hasValue())
+    if (T)
       printType(T.getValue());
   }
   // Print RVV int/float types.
@@ -225,7 +225,7 @@ void RVVEmitter::createHeader(raw_ostream &OS) {
     BasicType BT = ParseBasicType(I);
     for (int Log2LMUL : Log2LMULs) {
       auto T = RVVType::computeType(BT, Log2LMUL, PrototypeDescriptor::Vector);
-      if (T.hasValue()) {
+      if (T) {
         printType(T.getValue());
         auto UT = RVVType::computeType(
             BT, Log2LMUL,
@@ -240,7 +240,7 @@ void RVVEmitter::createHeader(raw_ostream &OS) {
   for (int Log2LMUL : Log2LMULs) {
     auto T = RVVType::computeType(BasicType::Float16, Log2LMUL,
                                   PrototypeDescriptor::Vector);
-    if (T.hasValue())
+    if (T)
       printType(T.getValue());
   }
   OS << "#endif\n";
@@ -249,7 +249,7 @@ void RVVEmitter::createHeader(raw_ostream &OS) {
   for (int Log2LMUL : Log2LMULs) {
     auto T = RVVType::computeType(BasicType::Float32, Log2LMUL,
                                   PrototypeDescriptor::Vector);
-    if (T.hasValue())
+    if (T)
       printType(T.getValue());
   }
   OS << "#endif\n";
@@ -258,7 +258,7 @@ void RVVEmitter::createHeader(raw_ostream &OS) {
   for (int Log2LMUL : Log2LMULs) {
     auto T = RVVType::computeType(BasicType::Float64, Log2LMUL,
                                   PrototypeDescriptor::Vector);
-    if (T.hasValue())
+    if (T)
       printType(T.getValue());
   }
   OS << "#endif\n\n";
@@ -467,7 +467,7 @@ void RVVEmitter::createRVVIntrinsics(
         Optional<RVVTypes> Types =
             RVVType::computeTypes(BT, Log2LMUL, NF, Prototype);
         // Ignored to create new intrinsic if there are any illegal types.
-        if (!Types.hasValue())
+        if (!Types)
           continue;
 
         auto SuffixStr = RVVIntrinsic::getSuffixStr(BT, Log2LMUL, SuffixDesc);
@@ -478,8 +478,7 @@ void RVVEmitter::createRVVIntrinsics(
             Name, SuffixStr, OverloadedName, OverloadedSuffixStr, IRName,
             /*IsMasked=*/false, /*HasMaskedOffOperand=*/false, HasVL,
             UnMaskedPolicy, HasUnMaskedOverloaded, HasBuiltinAlias,
-            ManualCodegen, Types.getValue(), IntrinsicTypes, RequiredFeatures,
-            NF));
+            ManualCodegen, *Types, IntrinsicTypes, RequiredFeatures, NF));
         if (HasMasked) {
           // Create a masked intrinsic
           Optional<RVVTypes> MaskTypes =
@@ -489,7 +488,7 @@ void RVVEmitter::createRVVIntrinsics(
               MaskedIRName,
               /*IsMasked=*/true, HasMaskedOffOperand, HasVL, MaskedPolicy,
               HasUnMaskedOverloaded, HasBuiltinAlias, MaskedManualCodegen,
-              MaskTypes.getValue(), IntrinsicTypes, RequiredFeatures, NF));
+              *MaskTypes, IntrinsicTypes, RequiredFeatures, NF));
         }
       } // end for Log2LMULList
     }   // end for TypeRange

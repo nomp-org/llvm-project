@@ -44,7 +44,7 @@ extern cl::OptionCategory BoltOptCategory;
 static cl::opt<bool> X86StripRedundantAddressSize(
     "x86-strip-redundant-address-size",
     cl::desc("Remove redundant Address-Size override prefix"), cl::init(true),
-    cl::ZeroOrMore, cl::cat(BoltOptCategory));
+    cl::cat(BoltOptCategory));
 
 } // namespace opts
 
@@ -3129,7 +3129,12 @@ public:
     case 1: Opcode = X86::MOV8ri; break;
     case 2: Opcode = X86::MOV16ri; break;
     case 4: Opcode = X86::MOV32ri; break;
-    case 8: Opcode = X86::MOV64ri; break;
+    // Writing to a 32-bit register always zeros the upper 32 bits of the
+    // full-width register
+    case 8:
+      Opcode = X86::MOV32ri;
+      Reg = getAliasSized(Reg, 4);
+      break;
     default:
       llvm_unreachable("Unexpected size");
     }

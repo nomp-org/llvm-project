@@ -397,7 +397,7 @@ CloneLoopBlocks(Loop *L, Value *NewIter, const bool UseEpilogRemainder,
 
   Optional<MDNode *> NewLoopID = makeFollowupLoopID(
       LoopID, {LLVMLoopUnrollFollowupAll, LLVMLoopUnrollFollowupRemainder});
-  if (NewLoopID.hasValue()) {
+  if (NewLoopID) {
     NewLoop->setLoopID(NewLoopID.getValue());
 
     // Do not setLoopAlreadyUnrolled if loop attributes have been defined
@@ -957,7 +957,7 @@ bool llvm::UnrollRuntimeLoopRemainder(
     SmallVector<WeakTrackingVH, 16> DeadInsts;
     for (BasicBlock *BB : RemainderBlocks) {
       for (Instruction &Inst : llvm::make_early_inc_range(*BB)) {
-        if (Value *V = SimplifyInstruction(&Inst, {DL, nullptr, DT, AC}))
+        if (Value *V = simplifyInstruction(&Inst, {DL, nullptr, DT, AC}))
           if (LI->replacementPreservesLCSSAForm(&Inst, V))
             Inst.replaceAllUsesWith(V);
         if (isInstructionTriviallyDead(&Inst))

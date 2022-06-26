@@ -265,8 +265,7 @@ bool CodeCoverageTool::isEquivalentFile(StringRef FilePath1,
                                         StringRef FilePath2) {
   auto Status1 = getFileStatus(FilePath1);
   auto Status2 = getFileStatus(FilePath2);
-  return Status1.hasValue() && Status2.hasValue() &&
-         sys::fs::equivalent(Status1.getValue(), Status2.getValue());
+  return Status1 && Status2 && sys::fs::equivalent(*Status1, *Status2);
 }
 
 ErrorOr<const MemoryBuffer &>
@@ -883,6 +882,9 @@ int CodeCoverageTool::run(Command Cmd, int argc, const char **argv) {
         }
         CoverageArches.emplace_back(Arch);
       }
+      if (CoverageArches.size() == 1)
+        CoverageArches.insert(CoverageArches.end(), ObjectFilenames.size() - 1,
+                              CoverageArches[0]);
       if (CoverageArches.size() != ObjectFilenames.size()) {
         error("Number of architectures doesn't match the number of objects");
         return 1;

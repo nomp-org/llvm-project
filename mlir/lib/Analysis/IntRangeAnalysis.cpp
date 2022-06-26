@@ -43,7 +43,7 @@ struct IntRangeLattice {
   /// value being marked overdefined is even an integer.
   static IntRangeLattice getPessimisticValueState(MLIRContext *context) {
     APInt noIntValue = APInt::getZeroWidth();
-    return ConstantIntRanges::range(noIntValue, noIntValue);
+    return ConstantIntRanges(noIntValue, noIntValue, noIntValue, noIntValue);
   }
 
   /// Create a maximal range ([0, uint_max(t)] / [int_min(t), int_max(t)])
@@ -109,7 +109,7 @@ static APInt getLoopBoundFromFold(Optional<OpFoldResult> loopBound,
                                   detail::IntRangeAnalysisImpl &analysis,
                                   bool getUpper) {
   unsigned int width = ConstantIntRanges::getStorageBitwidth(boundType);
-  if (loopBound.hasValue()) {
+  if (loopBound) {
     if (loopBound->is<Attribute>()) {
       if (auto bound =
               loopBound->get<Attribute>().dyn_cast_or_null<IntegerAttr>())
@@ -165,8 +165,7 @@ ChangeResult detail::IntRangeAnalysisImpl::visitOperation(
       bool isYieldedResult = llvm::any_of(v.getUsers(), [](Operation *op) {
         return op->hasTrait<OpTrait::IsTerminator>();
       });
-      if (isYieldedResult && oldRange.hasValue() &&
-          !(lattice.getValue() == *oldRange)) {
+      if (isYieldedResult && oldRange && !(lattice.getValue() == *oldRange)) {
         LLVM_DEBUG(llvm::dbgs() << "Loop variant loop result detected\n");
         result |= lattice.markPessimisticFixpoint();
       }
@@ -214,12 +213,24 @@ void detail::IntRangeAnalysisImpl::getSuccessorsForOperands(
     RegionBranchOpInterface branch, Optional<unsigned> sourceIndex,
     ArrayRef<LatticeElement<IntRangeLattice> *> operands,
     SmallVectorImpl<RegionSuccessor> &successors) {
-  auto toConstantAttr = [&branch](auto enumPair) -> Attribute {
-    Optional<APInt> maybeConstValue =
-        enumPair.value()->getValue().value.getConstantValue();
+  // Get a type with which to construct a constant.
+  auto getOperandType = [branch, sourceIndex](unsigned index) {
+    // The types of all return-like operations are the same.
+    if (!sourceIndex)
+      return branch->getOperand(index).getType();
 
-    if (maybeConstValue) {
-      return IntegerAttr::get(branch->getOperand(enumPair.index()).getType(),
+    for (Block &block : branch->getRegion(*sourceIndex)) {
+      Operation *terminator = block.getTerminator();
+      if (getRegionBranchSuccessorOperands(terminator, *sourceIndex))
+        return terminator->getOperand(index).getType();
+    }
+    return Type();
+  };
+
+  auto toConstantAttr = [&getOperandType](auto enumPair) -> Attribute {
+    if (Optional<APInt> maybeConstValue =
+            enumPair.value()->getValue().value.getConstantValue()) {
+      return IntegerAttr::get(getOperandType(enumPair.index()),
                               *maybeConstValue);
     }
     return {};
@@ -257,8 +268,7 @@ ChangeResult detail::IntRangeAnalysisImpl::visitNonControlFlowArguments(
       bool isYieldedValue = llvm::any_of(v.getUsers(), [](Operation *op) {
         return op->hasTrait<OpTrait::IsTerminator>();
       });
-      if (isYieldedValue && oldRange.hasValue() &&
-          !(lattice.getValue() == *oldRange)) {
+      if (isYieldedValue && oldRange && !(lattice.getValue() == *oldRange)) {
         LLVM_DEBUG(llvm::dbgs() << "Loop variant loop result detected\n");
         result |= lattice.markPessimisticFixpoint();
       }
@@ -278,7 +288,7 @@ ChangeResult detail::IntRangeAnalysisImpl::visitNonControlFlowArguments(
   // Infer bounds for loop arguments that have static bounds
   if (auto loop = dyn_cast<LoopLikeOpInterface>(op)) {
     Optional<Value> iv = loop.getSingleInductionVar();
-    if (!iv.hasValue()) {
+    if (!iv) {
       return ForwardDataFlowAnalysis<
           IntRangeLattice>::visitNonControlFlowArguments(op, region, operands);
     }

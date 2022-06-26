@@ -589,8 +589,6 @@ bool VPRecipeBase::mayReadFromMemory() const {
 
 bool VPRecipeBase::mayHaveSideEffects() const {
   switch (getVPDefID()) {
-  case VPBranchOnMaskSC:
-    return false;
   case VPWidenIntOrFpInductionSC:
   case VPWidenPointerInductionSC:
   case VPWidenCanonicalIVSC:
@@ -767,6 +765,7 @@ void VPInstruction::generateInstruction(VPTransformState &State,
   case VPInstruction::BranchOnCond: {
     if (Part != 0)
       break;
+
     Value *Cond = State.get(getOperand(0), VPIteration(Part, 0));
     VPRegionBlock *ParentRegion = getParent()->getParent();
     VPBasicBlock *Header = ParentRegion->getEntryBasicBlock();
@@ -898,6 +897,28 @@ void VPInstruction::setFastMathFlags(FastMathFlags FMFNew) {
 void VPlan::prepareToExecute(Value *TripCountV, Value *VectorTripCountV,
                              Value *CanonicalIVStartValue,
                              VPTransformState &State) {
+
+  VPBasicBlock *ExitingVPBB = getVectorLoopRegion()->getExitingBasicBlock();
+  auto *Term = dyn_cast<VPInstruction>(&ExitingVPBB->back());
+  // Try to simplify BranchOnCount to 'BranchOnCond true' if TC <= VF * UF when
+  // preparing to execute the plan for the main vector loop.
+  if (!CanonicalIVStartValue && Term &&
+      Term->getOpcode() == VPInstruction::BranchOnCount &&
+      isa<ConstantInt>(TripCountV)) {
+    ConstantInt *C = cast<ConstantInt>(TripCountV);
+    uint64_t TCVal = C->getZExtValue();
+    if (TCVal && TCVal <= State.VF.getKnownMinValue() * State.UF) {
+      auto *BOC =
+          new VPInstruction(VPInstruction::BranchOnCond,
+                            {getOrAddExternalDef(State.Builder.getTrue())});
+      Term->eraseFromParent();
+      ExitingVPBB->appendRecipe(BOC);
+      // TODO: Further simplifications are possible
+      //      1. Replace inductions with constants.
+      //      2. Replace vector loop region with VPBasicBlock.
+    }
+  }
+
   // Check if the trip count is needed, and if so build it.
   if (TripCount && TripCount->getNumUsers()) {
     for (unsigned Part = 0, UF = State.UF; Part < UF; ++Part)
@@ -1659,6 +1680,32 @@ void VPReductionPHIRecipe::print(raw_ostream &O, const Twine &Indent,
 }
 #endif
 
+void VPWidenPHIRecipe::execute(VPTransformState &State) {
+  assert(EnableVPlanNativePath &&
+         "Non-native vplans are not expected to have VPWidenPHIRecipes.");
+
+  // Currently we enter here in the VPlan-native path for non-induction
+  // PHIs where all control flow is uniform. We simply widen these PHIs.
+  // Create a vector phi with no operands - the vector phi operands will be
+  // set at the end of vector code generation.
+  VPBasicBlock *Parent = getParent();
+  VPRegionBlock *LoopRegion = Parent->getEnclosingLoopRegion();
+  unsigned StartIdx = 0;
+  // For phis in header blocks of loop regions, use the index of the value
+  // coming from the preheader.
+  if (LoopRegion->getEntryBasicBlock() == Parent) {
+    for (unsigned I = 0; I < getNumOperands(); ++I) {
+      if (getIncomingBlock(I) ==
+          LoopRegion->getSinglePredecessor()->getExitingBasicBlock())
+        StartIdx = I;
+    }
+  }
+  Value *Op0 = State.get(getOperand(StartIdx), 0);
+  Type *VecTy = Op0->getType();
+  Value *VecPhi = State.Builder.CreatePHI(VecTy, 2, "vec.phi");
+  State.set(this, VecPhi, 0);
+}
+
 template void DomTreeBuilder::Calculate<VPDominatorTree>(VPDominatorTree &DT);
 
 void VPValue::replaceAllUsesWith(VPValue *New) {
@@ -1716,7 +1763,10 @@ void VPInterleavedAccessInfo::visitBlock(VPBlockBase *Block, Old2NewTy &Old2New,
         continue;
       assert(isa<VPInstruction>(&VPI) && "Can only handle VPInstructions");
       auto *VPInst = cast<VPInstruction>(&VPI);
-      auto *Inst = cast<Instruction>(VPInst->getUnderlyingValue());
+
+      auto *Inst = dyn_cast_or_null<Instruction>(VPInst->getUnderlyingValue());
+      if (!Inst)
+        continue;
       auto *IG = IAI.getInterleaveGroup(Inst);
       if (!IG)
         continue;

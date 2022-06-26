@@ -50,7 +50,7 @@ public:
     auto BlockIT = CFCtx.getStmtToBlock().find(&ignoreCFGOmittedNodes(S));
     assert(BlockIT != CFCtx.getStmtToBlock().end());
     const auto &State = BlockToState[BlockIT->getSecond()->getBlockID()];
-    assert(State.hasValue());
+    assert(State);
     return &State.getValue().Env;
   }
 
@@ -84,6 +84,18 @@ public:
   }
 
   void VisitWhileStmt(const WhileStmt *S) {
+    auto *Cond = S->getCond();
+    assert(Cond != nullptr);
+    extendFlowCondition(*Cond);
+  }
+
+  void VisitDoStmt(const DoStmt *S) {
+    auto *Cond = S->getCond();
+    assert(Cond != nullptr);
+    extendFlowCondition(*Cond);
+  }
+
+  void VisitForStmt(const ForStmt *S) {
     auto *Cond = S->getCond();
     assert(Cond != nullptr);
     extendFlowCondition(*Cond);
@@ -197,7 +209,7 @@ static TypeErasedDataflowAnalysisState computeBlockInputState(
     // loop back edge to `Block`.
     const llvm::Optional<TypeErasedDataflowAnalysisState> &MaybePredState =
         BlockStates[Pred->getBlockID()];
-    if (!MaybePredState.hasValue())
+    if (!MaybePredState)
       continue;
 
     TypeErasedDataflowAnalysisState PredState = MaybePredState.getValue();
@@ -210,14 +222,14 @@ static TypeErasedDataflowAnalysisState computeBlockInputState(
       }
     }
 
-    if (MaybeState.hasValue()) {
+    if (MaybeState) {
       Analysis.joinTypeErased(MaybeState->Lattice, PredState.Lattice);
       MaybeState->Env.join(PredState.Env, Analysis);
     } else {
       MaybeState = std::move(PredState);
     }
   }
-  if (!MaybeState.hasValue()) {
+  if (!MaybeState) {
     // FIXME: Consider passing `Block` to `Analysis.typeErasedInitialElement()`
     // to enable building analyses like computation of dominators that
     // initialize the state of each basic block differently.
@@ -355,7 +367,7 @@ runTypeErasedDataflowAnalysis(const ControlFlowContext &CFCtx,
     TypeErasedDataflowAnalysisState NewBlockState =
         transferBlock(CFCtx, BlockStates, *Block, InitEnv, Analysis);
 
-    if (OldBlockState.hasValue() &&
+    if (OldBlockState &&
         Analysis.isEqualTypeErased(OldBlockState.getValue().Lattice,
                                    NewBlockState.Lattice) &&
         OldBlockState->Env.equivalentTo(NewBlockState.Env, Analysis)) {

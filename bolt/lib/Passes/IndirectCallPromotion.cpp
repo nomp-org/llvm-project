@@ -44,7 +44,7 @@ static cl::opt<unsigned> ICPJTTotalPercentThreshold(
     cl::desc(
         "The percentage threshold against total count for the promotion for "
         "jump tables"),
-    cl::init(5), cl::ZeroOrMore, cl::Hidden, cl::cat(BoltOptCategory));
+    cl::init(5), cl::Hidden, cl::cat(BoltOptCategory));
 
 static cl::opt<unsigned> ICPCallsRemainingPercentThreshold(
     "icp-calls-remaining-percent-threshold",
@@ -57,7 +57,7 @@ static cl::opt<unsigned> ICPCallsTotalPercentThreshold(
     cl::desc(
         "The percentage threshold against total count for the promotion for "
         "calls"),
-    cl::init(30), cl::ZeroOrMore, cl::Hidden, cl::cat(BoltOptCategory));
+    cl::init(30), cl::Hidden, cl::cat(BoltOptCategory));
 
 static cl::opt<unsigned> ICPMispredictThreshold(
     "indirect-call-promotion-mispredict-threshold",
@@ -71,7 +71,7 @@ static cl::opt<bool> ICPUseMispredicts(
              "should be applied at a callsite.  The "
              "-indirect-call-promotion-mispredict-threshold value will be used "
              "by this heuristic"),
-    cl::ZeroOrMore, cl::cat(BoltOptCategory));
+    cl::cat(BoltOptCategory));
 
 static cl::opt<unsigned>
     ICPTopN("indirect-call-promotion-topn",
@@ -238,17 +238,16 @@ IndirectCallPromotion::getCallTargets(BinaryBasicBlock &BB,
     }
 
     // Sort by symbol then addr.
-    std::sort(Targets.begin(), Targets.end(),
-              [](const Callsite &A, const Callsite &B) {
-                if (A.To.Sym && B.To.Sym)
-                  return A.To.Sym < B.To.Sym;
-                else if (A.To.Sym && !B.To.Sym)
-                  return true;
-                else if (!A.To.Sym && B.To.Sym)
-                  return false;
-                else
-                  return A.To.Addr < B.To.Addr;
-              });
+    llvm::sort(Targets, [](const Callsite &A, const Callsite &B) {
+      if (A.To.Sym && B.To.Sym)
+        return A.To.Sym < B.To.Sym;
+      else if (A.To.Sym && !B.To.Sym)
+        return true;
+      else if (!A.To.Sym && B.To.Sym)
+        return false;
+      else
+        return A.To.Addr < B.To.Addr;
+    });
 
     // Targets may contain multiple entries to the same target, but using
     // different indices. Their profile will report the same number of branches
@@ -294,21 +293,18 @@ IndirectCallPromotion::getCallTargets(BinaryBasicBlock &BB,
   // Sort by target count, number of indices in case of jump table, and
   // mispredicts. We prioritize targets with high count, small number of indices
   // and high mispredicts. Break ties by selecting targets with lower addresses.
-  std::stable_sort(Targets.begin(), Targets.end(),
-                   [](const Callsite &A, const Callsite &B) {
-                     if (A.Branches != B.Branches)
-                       return A.Branches > B.Branches;
-                     if (A.JTIndices.size() != B.JTIndices.size())
-                       return A.JTIndices.size() < B.JTIndices.size();
-                     if (A.Mispreds != B.Mispreds)
-                       return A.Mispreds > B.Mispreds;
-                     return A.To.Addr < B.To.Addr;
-                   });
+  llvm::stable_sort(Targets, [](const Callsite &A, const Callsite &B) {
+    if (A.Branches != B.Branches)
+      return A.Branches > B.Branches;
+    if (A.JTIndices.size() != B.JTIndices.size())
+      return A.JTIndices.size() < B.JTIndices.size();
+    if (A.Mispreds != B.Mispreds)
+      return A.Mispreds > B.Mispreds;
+    return A.To.Addr < B.To.Addr;
+  });
 
   // Remove non-symbol targets
-  auto Last = std::remove_if(Targets.begin(), Targets.end(),
-                             [](const Callsite &CS) { return !CS.To.Sym; });
-  Targets.erase(Last, Targets.end());
+  llvm::erase_if(Targets, [](const Callsite &CS) { return !CS.To.Sym; });
 
   LLVM_DEBUG(if (BF.getJumpTable(Inst)) {
     uint64_t TotalCount = 0;
@@ -471,14 +467,14 @@ IndirectCallPromotion::maybeGetHotJumpTableTargets(BinaryBasicBlock &BB,
     HotTarget.second = Index;
   }
 
-  std::transform(
-      HotTargetMap.begin(), HotTargetMap.end(), std::back_inserter(HotTargets),
+  llvm::transform(
+      HotTargetMap, std::back_inserter(HotTargets),
       [](const std::pair<MCSymbol *, std::pair<uint64_t, uint64_t>> &A) {
         return A.second;
       });
 
   // Sort with highest counts first.
-  std::sort(HotTargets.rbegin(), HotTargets.rend());
+  llvm::sort(reverse(HotTargets));
 
   LLVM_DEBUG({
     dbgs() << "BOLT-INFO: ICP jump table hot targets:\n";
@@ -566,9 +562,7 @@ IndirectCallPromotion::findCallTargetSymbols(std::vector<Callsite> &Targets,
 
       NewTargets.push_back(Target);
       std::vector<uint64_t>({JTIndex}).swap(NewTargets.back().JTIndices);
-      Target.JTIndices.erase(std::remove(Target.JTIndices.begin(),
-                                         Target.JTIndices.end(), JTIndex),
-                             Target.JTIndices.end());
+      llvm::erase_value(Target.JTIndices, JTIndex);
 
       // Keep fixCFG counts sane if more indices use this same target later
       assert(IndicesPerTarget[Target.To.Sym] > 0 && "wrong map");
@@ -581,7 +575,7 @@ IndirectCallPromotion::findCallTargetSymbols(std::vector<Callsite> &Targets,
       Target.Branches -= NewTargets.back().Branches;
       Target.Mispreds -= NewTargets.back().Mispreds;
     }
-    std::copy(Targets.begin(), Targets.end(), std::back_inserter(NewTargets));
+    llvm::copy(Targets, std::back_inserter(NewTargets));
     std::swap(NewTargets, Targets);
     N = I;
 
@@ -764,8 +758,8 @@ IndirectCallPromotion::rewriteCall(
     MCSymbol *&Sym = Itr->first;
     InstructionListType &Insts = Itr->second;
     assert(Sym);
-    std::unique_ptr<BinaryBasicBlock> TBB =
-        Function.createBasicBlock(OrigOffset, Sym);
+    std::unique_ptr<BinaryBasicBlock> TBB = Function.createBasicBlock(Sym);
+    TBB->setOffset(OrigOffset);
     for (MCInst &Inst : Insts) // sanitize new instructions.
       if (MIB->isCall(Inst))
         MIB->removeAnnotation(Inst, "CallProfile");
@@ -1168,7 +1162,7 @@ void IndirectCallPromotion::runOnFunctions(BinaryContext &BC) {
     }
 
     // Sort callsites by execution count.
-    std::sort(IndirectCalls.rbegin(), IndirectCalls.rend());
+    llvm::sort(reverse(IndirectCalls));
 
     // Find callsites that contribute to the top "opts::ICPTopCallsites"%
     // number of calls.

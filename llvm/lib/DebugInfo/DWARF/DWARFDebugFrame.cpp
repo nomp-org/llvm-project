@@ -1138,10 +1138,14 @@ Error DWARFDebugFrame::parse(DWARFDataExtractor Data) {
             // B-Key is used for signing functions associated with this
             // augmentation string
             break;
+            // This stack frame contains MTE tagged data, so needs to be
+            // untagged on unwind.
+          case 'G':
+            break;
           }
         }
 
-        if (AugmentationLength.hasValue()) {
+        if (AugmentationLength) {
           if (Offset != EndAugmentationOffset)
             return createStringError(errc::invalid_argument,
                                      "parsing augmentation data at 0x%" PRIx64

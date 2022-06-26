@@ -180,17 +180,19 @@ def SparseTensor_LexInsertOp : SparseTensor_Op<"lex_insert", []>,
     Inserts the given value at given indices into the underlying sparse
     storage format of the given tensor with the given indices. This
     operation can only be applied when a tensor materializes unintialized
-    with an `init` operation, the insertions occur in strict lexicographical
-    index order, and the final tensor is constructed with a `tensor`
-    operation that has the `hasInserts` attribute set.
+    with a `bufferization.alloc_tensor` operation, the insertions occur in
+    strict lexicographical index order, and the final tensor is constructed
+    with a `load` operation that has the `hasInserts` attribute set.
 
     Note that this operation is "impure" in the sense that its behavior
     is solely defined by side-effects and not SSA values. The semantics
     may be refined over time as our sparse abstractions evolve.
 
+    Example:
+
     ```mlir
     sparse_tensor.lex_insert %tensor, %indices, %val
-      : tensor<1024x1024xf64, #CSR>, memref<?xindex>, f64
+      : tensor<1024x1024xf64, #CSR>, memref<?xindex>, memref<f64>
     ```
   }];
   let assemblyFormat = "$tensor `,` $indices `,` $value attr-dict `:`"
@@ -309,12 +311,12 @@ def SparseTensor_ReleaseOp : SparseTensor_Op<"release", []>,
   string summary = "Releases underlying sparse storage format of given tensor";
   string description = [{
     Releases the underlying sparse storage format for a tensor that
-    materialized earlier through a `new` operator, `init` operator, or a
-    `convert` operator with an annotated tensor type as destination (unless
-    that convert is folded away since the source and destination types were
-    identical). This operation should only be called once for any materialized
-    tensor.  Also, after this operation, any subsequent `memref` querying
-    operation on the tensor returns undefined results.
+    materialized earlier through a `new` operation, a `convert` operation
+    with annotated destination tensor type (unless the convert is folded
+    away), or a `bufferization.alloc_tensor` operation. The release operation
+    should only be called once for any materialized tensor. After this
+    operation, any subsequent `memref` querying operation on the tensor
+    returns undefined results.
 
     Note that this operation is "impure" in the sense that its behavior
     is solely defined by side-effects and not SSA values. The semantics
@@ -385,7 +387,8 @@ def SparseTensor_BinaryOp : SparseTensor_Op<"binary", [NoSideEffect]>,
       would be equivalent to a union operation where non-overlapping values
       in the inputs are copied to the output unchanged.
 
-      Example of isEqual applied to intersecting elements only.
+      Example of isEqual applied to intersecting elements only:
+
       ```mlir
       %C = bufferization.alloc_tensor...
       %0 = linalg.generic #trait
@@ -405,8 +408,8 @@ def SparseTensor_BinaryOp : SparseTensor_Op<"binary", [NoSideEffect]>,
       } -> tensor<?xi8, #SparseVec>
       ```
 
-      Example of A+B in upper triangle, A-B in lower triangle
-      (not working yet, but construct will be available soon).
+      Example of A+B in upper triangle, A-B in lower triangle:
+
       ```mlir
       %C = bufferization.alloc_tensor...
       %1 = linalg.generic #trait
@@ -418,7 +421,7 @@ def SparseTensor_BinaryOp : SparseTensor_Op<"binary", [NoSideEffect]>,
           %result = sparse_tensor.binary %a, %b : f64, f64 to f64
             overlap={
               ^bb0(%x: f64, %y: f64):
-                %cmp = arith.cmpi "uge", %column, %row : index
+                %cmp = arith.cmpi "uge", %col, %row : index
                 %upperTriangleResult = arith.addf %x, %y : f64
                 %lowerTriangleResult = arith.subf %x, %y : f64
                 %ret = arith.select %cmp, %upperTriangleResult, %lowerTriangleResult : f64
@@ -427,9 +430,9 @@ def SparseTensor_BinaryOp : SparseTensor_Op<"binary", [NoSideEffect]>,
             left=identity
             right={
               ^bb0(%y: f64):
-                %cmp = arith.cmpi "uge", %column, %row : index
+                %cmp = arith.cmpi "uge", %col, %row : index
                 %lowerTriangleResult = arith.negf %y : f64
-                %ret = arith.select %cmp, %y, %lowerTriangleResult
+                %ret = arith.select %cmp, %y, %lowerTriangleResult : f64
                 sparse_tensor.yield %ret : f64
             }
           linalg.yield %result : f64
@@ -438,7 +441,8 @@ def SparseTensor_BinaryOp : SparseTensor_Op<"binary", [NoSideEffect]>,
 
       Example of set difference. Returns a copy of A where its sparse structure
       is *not* overlapped by B. The element type of B can be different than A
-      because we never use its values, only its sparse structure.
+      because we never use its values, only its sparse structure:
+
       ```mlir
       %C = bufferization.alloc_tensor...
       %2 = linalg.generic #trait
@@ -486,6 +490,7 @@ def SparseTensor_UnaryOp : SparseTensor_Op<"unary", [NoSideEffect]>,
       region does not contribute to the output.
 
       Example of A+1, restricted to existing elements:
+
       ```mlir
       %C = bufferization.alloc_tensor...
       %0 = linalg.generic #trait
@@ -546,6 +551,7 @@ def SparseTensor_YieldOp : SparseTensor_Op<"yield", [NoSideEffect, Terminator]>,
       Yields a value from within a `binary` or `unary` block.
 
       Example:
+
       ```
       %0 = sparse_tensor.unary %a : i64 to i64 {
         ^bb0(%arg0: i64):

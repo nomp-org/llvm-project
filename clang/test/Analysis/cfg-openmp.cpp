@@ -688,6 +688,30 @@ void tl(int argc) {
     argc = x;
 }
 
+// CHECK-LABEL:  void maskedtaskloop(int argc)
+void maskedtaskloop(int argc) {
+  int x, cond, fp, rd, lin, step, map;
+// CHECK-DAG:   [B3]
+// CHECK-DAG:  [[#MTLB:]]: x
+// CHECK-DAG:  [[#MTLB+1]]: [B3.[[#MTLB]]] (ImplicitCastExpr, LValueToRValue, int)
+// CHECK-DAG:  [[#MTLB+2]]: argc
+// CHECK-DAG:  [[#MTLB+3]]: [B3.[[#MTLB+2]]] = [B3.[[#MTLB+1]]]
+// CHECK-DAG:   [B1]
+// CHECK-DAG:  [[#MTL:]]: cond
+// CHECK-DAG:  [[#MTL+1]]: [B1.[[#MTL]]] (ImplicitCastExpr, LValueToRValue, int)
+// CHECK-DAG:  [[#MTL+2]]: [B1.[[#MTL+1]]] (ImplicitCastExpr, IntegralToBoolean, _Bool)
+// CHECK-DAG:  [[#MTL+3]]: fp
+// CHECK-DAG:  [[#MTL+4]]: rd
+// CHECK-DAG:  [[#MTL+5]]: [B3.[[#MTLB+2]]]
+// CHECK-DAG:  [[#MTL+6]]: [B3.[[#MTLB]]]
+// CHECK-DAG:  [[#MTL+7]]: #pragma omp masked taskloop if(cond) firstprivate(fp) reduction(+: rd)
+// CHECK-DAG:    for (int i = 0;
+// CHECK-DAG:        [B3.[[#MTLB+3]]];
+#pragma omp masked taskloop if(cond) firstprivate(fp) reduction(+:rd)
+  for (int i = 0; i < 10; ++i)
+    argc = x;
+}
+
 // CHECK-LABEL:  void tls(int argc)
 void tls(int argc) {
   int x, cond, fp, rd, lin, step, map;
@@ -893,4 +917,18 @@ void targetparallelloop(int argc) {
     argc = x;
 }
 
+// CHECK-LABEL:  void parallelmasked(int argc)
+void parallelmasked(int argc) {
+  int x = 0;
+// CHECK:        [B1]
+// CHECK-NEXT:   1: 0
+// CHECK-NEXT:   2: int x = 0;
+// CHECK-NEXT:   [[#MASKED:]]: x
+// CHECK-NEXT:   [[#MASKED+1]]: [B1.[[#MASKED]]] (ImplicitCastExpr, LValueToRValue, int)
+// CHECK-NEXT:   [[#MASKED+2]]: argc
+// CHECK-NEXT:   [[#MASKED+3]]: [B1.[[#MASKED+2]]] = [B1.[[#MASKED+1]]]
+// CHECK-NEXT:   [[#MASKED+4]]: #pragma omp parallel masked
+#pragma omp parallel masked
+  argc = x;
+}
 #endif  // _OPENMP

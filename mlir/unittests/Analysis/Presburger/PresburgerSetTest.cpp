@@ -124,6 +124,10 @@ TEST(SetTest, containsPoint) {
         EXPECT_FALSE(setB.containsPoint({x, y}));
     }
   }
+
+  // The PresburgerSet has only one id, x, so we supply one value.
+  EXPECT_TRUE(PresburgerSet(parsePoly("(x) : (x - 2*(x floordiv 2) == 0)"))
+                  .containsPoint({0}));
 }
 
 TEST(SetTest, Union) {
@@ -745,4 +749,76 @@ TEST(SetTest, computeVolume) {
   expectComputedVolumeIsValidOverapprox(unbounded.unionSet(diamond),
                                         /*trueVolume=*/{},
                                         /*resultBound=*/{});
+}
+
+// The last `numToProject` dims will be projected out, i.e., converted to
+// locals.
+void testComputeReprAtPoints(IntegerPolyhedron poly,
+                             ArrayRef<SmallVector<int64_t, 4>> points,
+                             unsigned numToProject) {
+  poly.convertIdKind(IdKind::SetDim, poly.getNumDimIds() - numToProject,
+                     poly.getNumDimIds(), IdKind::Local);
+  PresburgerSet repr = poly.computeReprWithOnlyDivLocals();
+  EXPECT_TRUE(repr.hasOnlyDivLocals());
+  EXPECT_TRUE(repr.getSpace().isCompatible(poly.getSpace()));
+  for (const SmallVector<int64_t, 4> &point : points) {
+    EXPECT_EQ(poly.containsPointNoLocal(point).hasValue(),
+              repr.containsPoint(point));
+  }
+}
+
+void testComputeRepr(IntegerPolyhedron poly, const PresburgerSet &expected,
+                     unsigned numToProject) {
+  poly.convertIdKind(IdKind::SetDim, poly.getNumDimIds() - numToProject,
+                     poly.getNumDimIds(), IdKind::Local);
+  PresburgerSet repr = poly.computeReprWithOnlyDivLocals();
+  EXPECT_TRUE(repr.hasOnlyDivLocals());
+  EXPECT_TRUE(repr.getSpace().isCompatible(poly.getSpace()));
+  EXPECT_TRUE(repr.isEqual(expected));
+}
+
+TEST(SetTest, computeReprWithOnlyDivLocals) {
+  testComputeReprAtPoints(parsePoly("(x, y) : (x - 2*y == 0)"),
+                          {{1, 0}, {2, 1}, {3, 0}, {4, 2}, {5, 3}},
+                          /*numToProject=*/0);
+  testComputeReprAtPoints(parsePoly("(x, e) : (x - 2*e == 0)"),
+                          {{1}, {2}, {3}, {4}, {5}}, /*numToProject=*/1);
+
+  // Tests to check that the space is preserved.
+  testComputeReprAtPoints(parsePoly("(x, y)[z, w] : ()"), {},
+                          /*numToProject=*/1);
+  testComputeReprAtPoints(parsePoly("(x, y)[z, w] : (z - (w floordiv 2) == 0)"),
+                          {},
+                          /*numToProject=*/1);
+
+  // Bezout's lemma: if a, b are constants,
+  // the set of values that ax + by can take is all multiples of gcd(a, b).
+  testComputeRepr(
+      parsePoly("(x, e, f) : (x - 15*e - 21*f == 0)"),
+      PresburgerSet(parsePoly({"(x) : (x - 3*(x floordiv 3) == 0)"})),
+      /*numToProject=*/2);
+}
+
+TEST(SetTest, subtractOutputSizeRegression) {
+  PresburgerSet set1 =
+      parsePresburgerSetFromPolyStrings(1, {"(i) : (i >= 0, 10 - i >= 0)"});
+  PresburgerSet set2 =
+      parsePresburgerSetFromPolyStrings(1, {"(i) : (i - 5 >= 0)"});
+
+  PresburgerSet set3 =
+      parsePresburgerSetFromPolyStrings(1, {"(i) : (i >= 0, 4 - i >= 0)"});
+
+  PresburgerSet result = set1.subtract(set2);
+
+  EXPECT_TRUE(result.isEqual(set3));
+
+  // Previously, the subtraction result was producing an extra empty set, which
+  // is correct, but bad for output size.
+  EXPECT_EQ(result.getNumDisjuncts(), 1u);
+
+  PresburgerSet subtractSelf = set1.subtract(set1);
+  EXPECT_TRUE(subtractSelf.isIntegerEmpty());
+  // Previously, the subtraction result was producing several unnecessary empty
+  // sets, which is correct, but bad for output size.
+  EXPECT_EQ(subtractSelf.getNumDisjuncts(), 0u);
 }

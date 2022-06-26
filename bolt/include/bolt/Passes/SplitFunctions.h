@@ -18,18 +18,16 @@ namespace bolt {
 
 /// Split function code in multiple parts.
 class SplitFunctions : public BinaryFunctionPass {
-public:
-  /// Settings for splitting function bodies into hot/cold partitions.
-  enum SplittingType : char {
-    ST_NONE = 0, /// Do not split functions.
-    ST_LARGE,    /// In non-relocation mode, only split functions that
-                 /// are too large to fit into the original space.
-    ST_ALL,      /// Split all functions.
-  };
-
 private:
   /// Split function body into fragments.
   void splitFunction(BinaryFunction &Function);
+
+  /// Create trampoline landing pads for exception handling code to guarantee
+  /// that every landing pad is placed in the same function fragment as the
+  /// corresponding thrower block. The trampoline landing pad, when created,
+  /// will redirect the execution to the real landing pad in a different
+  /// fragment.
+  void createEHTrampolines(BinaryFunction &Function) const;
 
   std::atomic<uint64_t> SplitBytesHot{0ull};
   std::atomic<uint64_t> SplitBytesCold{0ull};

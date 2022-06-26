@@ -1,4 +1,4 @@
-//===- unittests/Analysis/FlowSensitive/SingelVarConstantPropagation.cpp --===//
+//===- unittests/Analysis/FlowSensitive/MultiVarConstantPropagation.cpp --===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -94,7 +94,7 @@ struct ValueLattice {
 };
 
 std::ostream &operator<<(std::ostream &OS, const ValueLattice &L) {
-  if (L.Value.hasValue())
+  if (L.Value)
     return OS << *L.Value;
   switch (L.State) {
   case ValueLattice::ValueState::Undefined:
@@ -194,9 +194,7 @@ MATCHER_P(Var, name,
   return arg->getName() == name;
 }
 
-MATCHER_P(HasConstantVal, v, "") {
-  return arg.Value.hasValue() && *arg.Value == v;
-}
+MATCHER_P(HasConstantVal, v, "") { return arg.Value && *arg.Value == v; }
 
 MATCHER(Varies, "") { return arg == arg.top(); }
 

@@ -1,4 +1,4 @@
-//===- unittests/Analysis/FlowSensitive/SingelVarConstantPropagation.cpp --===//
+//===- unittests/Analysis/FlowSensitive/SingleVarConstantPropagation.cpp --===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -171,9 +171,7 @@ public:
 using ::testing::Pair;
 using ::testing::UnorderedElementsAre;
 
-MATCHER_P(HasConstantVal, v, "") {
-  return arg.Data.hasValue() && arg.Data->Value == v;
-}
+MATCHER_P(HasConstantVal, v, "") { return arg.Data && arg.Data->Value == v; }
 
 MATCHER(IsUnknown, "") { return arg == arg.bottom(); }
 MATCHER(Varies, "") { return arg == arg.top(); }

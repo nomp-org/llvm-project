@@ -907,9 +907,8 @@ SparcAsmParser::parseTailRelocSym(OperandVector &Operands) {
       default:
         return false;
       }
-    default:
-      llvm_unreachable("Unexpected kind parameter");
     }
+    llvm_unreachable("Unhandled SparcAsmParser::TailRelocKind enum");
   };
 
   if (getLexer().getKind() != AsmToken::Percent) {
