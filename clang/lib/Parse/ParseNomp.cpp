@@ -145,8 +145,7 @@ int Parser::ParseNompExpr(llvm::SmallVector<Expr *, 16> &ExprList) {
   ExprResult LHS = ParseAssignmentExpression();
   ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
   if (ER.isUsable()) {
-    Expr *E = ER.getAs<Expr>();
-    ExprList.push_back(E);
+    ExprList.push_back(ER.getAs<Expr>());
     return 0;
   }
   return 1;
@@ -160,12 +159,11 @@ void Parser::ParseNompExprListUntilRParen(
   while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
     ParseNompExpr(ExprList);
     if (Tok.isNot(tok::r_paren)) {
-      if (Tok.isNot(tok::comma)) {
+      if (!TryConsumeToken(tok::comma)) {
         FullSourceLoc loc(Tok.getLocation(), sm);
         pp.Diag(Tok, diag::err_nomp_comma_expected)
             << Pragma << loc.getLineNumber() << loc.getColumnNumber();
-      } else {
-        ConsumeToken();
+        SkipUntil(tok::annot_pragma_nomp_end);
       }
     }
   }
@@ -192,6 +190,8 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
     FullSourceLoc loc(Tok.getLocation(), sm);
     pp.Diag(Tok, diag::err_nomp_lparen_expected)
         << "init" << loc.getLineNumber() << loc.getColumnNumber();
+    SkipUntil(tok::annot_pragma_nomp_end);
+    return StmtEmpty();
   }
 
   llvm::SmallVector<Expr *, 16> CallArgs;
@@ -202,6 +202,8 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
     FullSourceLoc loc(SL, sm);
     pp.Diag(Tok, diag::err_nomp_invalid_number_of_args)
         << CallArgs.size() << "init" << 3 << loc.getLineNumber();
+    SkipUntil(tok::annot_pragma_nomp_end);
+    return StmtEmpty();
   }
 
   return CreateCallExpr(ast, SL, ArrayRef<Expr *>(CallArgs),
@@ -218,6 +220,8 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     FullSourceLoc loc(Tok.getLocation(), SM);
     PP.Diag(Tok, diag::err_nomp_lparen_expected)
         << "update" << loc.getLineNumber() << loc.getColumnNumber();
+    SkipUntil(tok::annot_pragma_nomp_end);
+    return StmtEmpty();
   }
 
   // Direction: "to", "from", "alloc", "free"
@@ -229,6 +233,8 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     FullSourceLoc loc(Tok.getLocation(), SM);
     PP.Diag(Tok, diag::err_nomp_invalid_update_direction)
         << loc.getLineNumber() << loc.getColumnNumber();
+    SkipUntil(tok::annot_pragma_nomp_end);
+    return StmtEmpty();
   } else {
     ConsumeToken();
   }
@@ -238,6 +244,8 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     FullSourceLoc loc(Tok.getLocation(), SM);
     PP.Diag(Tok, diag::err_nomp_colon_expected)
         << "update" << loc.getLineNumber() << loc.getColumnNumber();
+    SkipUntil(tok::annot_pragma_nomp_end);
+    return StmtEmpty();
   }
 
   llvm::SmallVector<Stmt *, 16> FuncCalls;
@@ -292,9 +300,8 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
       return StmtEmpty();
     }
 
-    // UETT_SizeOf
+    // sizeof()
     QualType CT = T->getPointeeOrArrayElementType()->getCanonicalTypeInternal();
-    std::cout << "CT: " << CT.getAsString() << "\n";
     UnaryExprOrTypeTraitExpr *UETT = new (AST) UnaryExprOrTypeTraitExpr(
         UETT_SizeOf, AST.getTrivialTypeSourceInfo(CT), AST.getSizeType(),
         SourceLocation(), SourceLocation());
@@ -323,12 +330,11 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
   Sema &sema = getActions();
   ASTContext &ast = sema.getASTContext();
 
-  if (Tok.isNot(tok::annot_pragma_nomp_end)) {
+  if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
     FullSourceLoc loc(Tok.getLocation(), sm);
     pp.Diag(Tok, diag::err_nomp_eod_expected)
         << "finalize" << loc.getLineNumber() << loc.getColumnNumber();
-  } else {
-    ConsumeAnnotationToken();
+    return StmtEmpty();
   }
 
   return CreateCallExpr(ast, SL, ArrayRef<Expr *>(),
