@@ -3351,6 +3351,7 @@ private:
   StmtResult ParseNompInit(const SourceLocation &sLoc);
   StmtResult ParseNompFinalize(const SourceLocation &sLoc);
   StmtResult ParseNompUpdate(const SourceLocation &sLoc);
+  StmtResult ParseNompFor(const SourceLocation &sLoc);
   StmtResult ParseNompDirective(ParsedStmtContext StmtCtx);
 
 public:

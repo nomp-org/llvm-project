@@ -1491,6 +1491,8 @@ def err_nomp_identifier_expected: Error<
   "Expected a variable name at line %1, column %2">;
 def err_nomp_pointer_type_expected: Error<
   "Expected a pointer in the nomp directive '%0' at line %1, column %2">;
+def err_nomp_for_expected: Error<
+  "Expected a for loop after the nomp directive '%0' at line %1, column %2">;
 def err_nomp_multiple_vardecls_found: Error<
   "Found multiple declarations for variable '%0' referenced at line %1, column %2">;
 def err_nomp_no_vardecl_found: Error<

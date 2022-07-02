@@ -324,6 +324,85 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
   return CompoundStmt::Create(AST, ArrayRef<Stmt *>(FuncCalls), SL, EL);
 }
 
+StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
+  Preprocessor &pp = getPreprocessor();
+  SourceManager &sm = pp.getSourceManager();
+  Sema &S = getActions();
+  ASTContext &AST = S.getASTContext();
+
+  if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
+    FullSourceLoc loc(Tok.getLocation(), sm);
+    pp.Diag(Tok, diag::err_nomp_eod_expected)
+        << "for" << loc.getLineNumber() << loc.getColumnNumber();
+    return StmtEmpty();
+  }
+
+  // Check if the next token is tok::kw_for. If not, exit. We should skip
+  // comments if they exist -- but not doing it right now. TODO for future.
+  if (Tok.isNot(tok::kw_for)) {
+    FullSourceLoc loc(Tok.getLocation(), sm);
+    pp.Diag(Tok, diag::err_nomp_for_expected)
+        << "for" << loc.getLineNumber() << loc.getColumnNumber();
+    return StmtEmpty();
+  }
+
+  // Parse the for statement
+  StmtResult F = ParseForStatement(nullptr);
+  ForStmt *FS = F.getAs<ForStmt>();
+
+  // We are going to create all our statements (declarations, function calls)
+  // into the following vector and then create a compound statement out of it.
+  llvm::SmallVector<Stmt *, 16> Stmts;
+
+  // First, let's create the statement `int id = -1` which is passed as an
+  // output argument to nomp_jit()
+  QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
+  VarDecl *ID =
+      VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("id"), IntTy,
+                      AST.getTrivialTypeSourceInfo(IntTy), SC_Static);
+  ID->setInit(UnaryOperator::Create(
+      AST, IntegerLiteral::Create(AST, llvm::APInt(32, 1), IntTy, SL), UO_Minus,
+      IntTy, VK_LValue, OK_Ordinary, SL, false, FPOptionsOverride()));
+  llvm::SmallVector<Decl *, 1> D;
+  D.push_back(ID);
+  Stmts.push_back(
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
+
+  llvm::SmallVector<Expr *, 16> FuncArgs;
+  // Next we create the AST node for the function call nomp_jit().
+  // First argument to nomp_jit() is '&id'
+  DeclRefExpr *DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, ID,
+                                         false, SL, ID->getType(), VK_LValue);
+  FuncArgs.push_back(UnaryOperator::Create(
+      AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
+      OK_Ordinary, SL, false, FPOptionsOverride()));
+
+  // Second argument to nomp_jit() is the kernel string (or the for loop)
+  SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
+  unsigned s = sm.getFileOffset(BL), e = sm.getFileOffset(EL);
+
+  llvm::StringRef bfr = sm.getBufferData(sm.getFileID(BL));
+  unsigned n = e;
+  for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
+    ;
+
+  const char *ptr = bfr.data();
+  llvm::StringRef knl(&ptr[s], n - s + 2);
+  QualType StrTy =
+      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, knl.size() + 1),
+                               nullptr, ArrayType::Normal, 0);
+  StringLiteral *KSL =
+      StringLiteral::Create(AST, knl, StringLiteral::Ascii, false, StrTy, SL);
+  ImplicitCastExpr *ICE =
+      ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
+                               KSL, nullptr, VK_PRValue, FPOptionsOverride());
+  FuncArgs.push_back(ICE);
+  Stmts.push_back(CreateCallExpr(AST, SL, ArrayRef<Expr *>(FuncArgs),
+                                 NompFuncDecls[NompFor]));
+
+  return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), SL, SL);
+}
+
 StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
   Preprocessor &pp = getPreprocessor();
   SourceManager &sm = pp.getSourceManager();
@@ -376,12 +455,17 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   }
 
   SourceLocation SL = Tok.getLocation();
-  NompDirectiveKind directive = NompInvalid;
   pp.Lex(Tok);
-  if (Tok.is(tok::identifier))
-    directive = GetNompDirectiveKind(Tok.getIdentifierInfo()->getName());
 
-  if (directive == NompInvalid) {
+  llvm::StringRef DN;
+  if (Tok.is(tok::identifier))
+    DN = Tok.getIdentifierInfo()->getName();
+  else if (Tok.is(tok::kw_for))
+    DN = llvm::StringRef("for");
+
+  NompDirectiveKind D = GetNompDirectiveKind(DN);
+
+  if (D == NompInvalid) {
     FullSourceLoc loc(Tok.getLocation(), sm);
     pp.Diag(Tok, diag::err_nomp_invalid_directive) << loc.getLineNumber();
   } else {
@@ -389,7 +473,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   }
 
   StmtResult result = StmtEmpty();
-  switch (directive) {
+  switch (D) {
   case NompInit:
     result = ParseNompInit(SL);
     break;
@@ -397,6 +481,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
     result = ParseNompUpdate(SL);
     break;
   case NompFor:
+    result = ParseNompFor(SL);
     break;
   case NompFinalize:
     result = ParseNompFinalize(SL);
