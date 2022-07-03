@@ -25,57 +25,62 @@
 
 using namespace clang;
 
-static const int maxNompFuncDecls = 4;
-static FunctionDecl *NompFuncDecls[maxNompFuncDecls] = {nullptr};
-static int numNompFuncDecls = 0;
-
-enum NompDirectiveKind {
+enum LibNompFunc {
   NompInvalid = -1,
   NompInit = 0,
   NompUpdate = 1,
-  NompFor = 2,
-  NompFinalize = 3
+  NompJit = 2,
+  NompFor = 3,
+  NompFinalize = 4,
+  NompErr = 5
+};
+static FunctionDecl *LibNompFuncs[32] = {nullptr};
+
+enum Directive {
+  DirectiveInvalid = -1,
+  DirectiveInit = 0,
+  DirectiveUpdate = 1,
+  DirectiveFor = 2,
+  DirectiveFinalize = 3
 };
 
-enum NompUpdateDirection {
-  NompUpdateInvalid = -1,
-  NompUpdateTo = 0,
-  NompUpdateFrom = 1,
-  NompUpdateAlloc = 2,
-  NompUpdateFree = 3
+enum UpdateDirection {
+  UpdateInvalid = -1,
+  UpdateTo = 0,
+  UpdateFrom = 1,
+  UpdateAlloc = 2,
+  UpdateFree = 3
 };
 
 //==============================================================================
 // Helper functions: String to Nomp types conversion
 //
-static inline NompDirectiveKind
-GetNompDirectiveKind(const llvm::StringRef name) {
-  return llvm::StringSwitch<NompDirectiveKind>(name)
-      .Case("init", NompInit)
-      .Case("update", NompUpdate)
-      .Case("for", NompFor)
-      .Case("finalize", NompFinalize)
-      .Default(NompInvalid);
+static inline Directive GetDirective(const llvm::StringRef name) {
+  return llvm::StringSwitch<Directive>(name)
+      .Case("init", DirectiveInit)
+      .Case("update", DirectiveUpdate)
+      .Case("for", DirectiveFor)
+      .Case("finalize", DirectiveFinalize)
+      .Default(DirectiveInvalid);
 }
 
-static inline NompDirectiveKind
-GetNompFuncDeclKind(const llvm::StringRef name) {
-  return llvm::StringSwitch<NompDirectiveKind>(name)
+static inline LibNompFunc GetLibNompFunc(const llvm::StringRef name) {
+  return llvm::StringSwitch<LibNompFunc>(name)
       .Case("nomp_init", NompInit)
       .Case("nomp_update", NompUpdate)
+      .Case("nomp_jit", NompJit)
       .Case("nomp_for", NompFor)
       .Case("nomp_finalize", NompFinalize)
       .Default(NompInvalid);
 }
 
-static inline NompUpdateDirection
-GetNompUpdateDirection(const llvm::StringRef dirn) {
-  return llvm::StringSwitch<NompUpdateDirection>(dirn)
-      .Case("to", NompUpdateTo)
-      .Case("from", NompUpdateFrom)
-      .Case("alloc", NompUpdateAlloc)
-      .Case("free", NompUpdateFree)
-      .Default(NompUpdateInvalid);
+static inline UpdateDirection GetUpdateDirection(const llvm::StringRef dirn) {
+  return llvm::StringSwitch<UpdateDirection>(dirn)
+      .Case("to", UpdateTo)
+      .Case("from", UpdateFrom)
+      .Case("alloc", UpdateAlloc)
+      .Case("free", UpdateFree)
+      .Default(UpdateInvalid);
 }
 
 static inline void NompHandleError(unsigned DiagID, Token &Tok, Parser &P,
@@ -198,7 +203,7 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
 
   ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
   return CreateCallExpr(AST, SL, ArrayRef<Expr *>(CallArgs),
-                        NompFuncDecls[NompInit]);
+                        LibNompFuncs[NompInit]);
 }
 
 StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
@@ -210,12 +215,12 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     return StmtEmpty();
   }
 
-  // Direction: "to", "from", "alloc", "free"
-  NompUpdateDirection dirn = NompUpdateInvalid;
-  if (Tok.is(tok::identifier))
-    dirn = GetNompUpdateDirection(Tok.getIdentifierInfo()->getName());
-
-  if (dirn == NompUpdateInvalid) {
+  // Direction should be one of the following: "to", "from", "alloc", "free".
+  // So, if the token is not an identifier, it is an error.
+  if (Tok.isNot(tok::identifier))
+    NompHandleError(diag::err_nomp_identifier_expected, Tok, *this);
+  UpdateDirection dirn = GetUpdateDirection(Tok.getIdentifierInfo()->getName());
+  if (dirn == UpdateInvalid) {
     NompHandleError(diag::err_nomp_invalid_update_direction, Tok, *this);
     return StmtEmpty();
   }
@@ -273,7 +278,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
         SourceLocation(), SourceLocation());
     FuncArgs.push_back(UETT);
     FuncCalls.push_back(
-        CreateCallExpr(AST, TL, FuncArgs, NompFuncDecls[NompUpdate]));
+        CreateCallExpr(AST, TL, FuncArgs, LibNompFuncs[NompUpdate]));
     TryConsumeToken(tok::comma);
   }
 
@@ -356,7 +361,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
                                KSL, nullptr, VK_PRValue, FPOptionsOverride());
   FuncArgs.push_back(ICE);
   Stmts.push_back(CreateCallExpr(AST, SL, ArrayRef<Expr *>(FuncArgs),
-                                 NompFuncDecls[NompFor]));
+                                 LibNompFuncs[NompFor]));
 
   // TODO: Create AST node for nomp_for
 
@@ -373,7 +378,7 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
   }
 
   return CreateCallExpr(AST, SL, ArrayRef<Expr *>(),
-                        NompFuncDecls[NompFinalize]);
+                        LibNompFuncs[NompFinalize]);
 }
 
 //==============================================================================
@@ -390,19 +395,15 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
 //         annot_pragma_nomp_end
 //
 StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
-  if (numNompFuncDecls == 0) {
-    ASTContext &ast = this->getActions().getASTContext();
-    TranslationUnitDecl *TUD = ast.getTranslationUnitDecl();
-    DeclContext *DC = TUD->castToDeclContext(TUD);
-    for (auto d = DC->decls_begin(); d != DC->decls_end(); d++) {
-      if (FunctionDecl *decl = dyn_cast<FunctionDecl>(*d)) {
-        NompDirectiveKind directive =
-            GetNompFuncDeclKind(decl->getNameInfo().getAsString());
-        if (directive != NompInvalid) {
-          NompFuncDecls[directive] = decl;
-          numNompFuncDecls++;
-        }
-      }
+  // Lookup libnomp API functions
+  ASTContext &ast = this->getActions().getASTContext();
+  TranslationUnitDecl *TUD = ast.getTranslationUnitDecl();
+  DeclContext *DC = TUD->castToDeclContext(TUD);
+  for (auto d = DC->decls_begin(); d != DC->decls_end(); d++) {
+    if (FunctionDecl *decl = dyn_cast<FunctionDecl>(*d)) {
+      LibNompFunc FN = GetLibNompFunc(decl->getNameInfo().getAsString());
+      if (FN != NompInvalid)
+        LibNompFuncs[FN] = decl;
     }
   }
 
@@ -419,21 +420,21 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
     return result;
   ConsumeToken();
 
-  NompDirectiveKind D = GetNompDirectiveKind(DN);
+  Directive D = GetDirective(DN);
   switch (D) {
-  case NompInit:
+  case DirectiveInit:
     result = ParseNompInit(SL);
     break;
-  case NompUpdate:
+  case DirectiveUpdate:
     result = ParseNompUpdate(SL);
     break;
-  case NompFor:
+  case DirectiveFor:
     result = ParseNompFor(SL);
     break;
-  case NompFinalize:
+  case DirectiveFinalize:
     result = ParseNompFinalize(SL);
     break;
-  case NompInvalid:
+  case DirectiveInvalid:
     NompHandleError(diag::err_nomp_invalid_directive, Tok, *this, 1);
     break;
   }
