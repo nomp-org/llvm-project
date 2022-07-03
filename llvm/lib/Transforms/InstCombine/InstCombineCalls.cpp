@@ -795,7 +795,7 @@ static CallInst *canonicalizeConstantArg0ToArg1(CallInst &Call) {
 /// \p Result and a constant \p Overflow value.
 static Instruction *createOverflowTuple(IntrinsicInst *II, Value *Result,
                                         Constant *Overflow) {
-  Constant *V[] = {UndefValue::get(Result->getType()), Overflow};
+  Constant *V[] = {PoisonValue::get(Result->getType()), Overflow};
   StructType *ST = cast<StructType>(II->getType());
   Constant *Struct = ConstantStruct::get(ST, V);
   return InsertValueInst::Create(Struct, Result, 0);
@@ -2357,7 +2357,7 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     }
     break;
   }
-  case Intrinsic::experimental_vector_insert: {
+  case Intrinsic::vector_insert: {
     Value *Vec = II->getArgOperand(0);
     Value *SubVec = II->getArgOperand(1);
     Value *Idx = II->getArgOperand(2);
@@ -2403,7 +2403,7 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     }
     break;
   }
-  case Intrinsic::experimental_vector_extract: {
+  case Intrinsic::vector_extract: {
     Value *Vec = II->getArgOperand(0);
     Value *Idx = II->getArgOperand(1);
 
