@@ -284,7 +284,8 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
   SourceLocation EL = Tok.getLocation();
   ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
-  return CompoundStmt::Create(AST, ArrayRef<Stmt *>(FuncCalls), SL, EL);
+  return CompoundStmt::Create(AST, ArrayRef<Stmt *>(FuncCalls),
+                              FPOptionsOverride(), SL, EL);
 }
 
 StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
@@ -348,8 +349,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   QualType StrTy =
       AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, knl.size() + 1),
                                nullptr, ArrayType::Normal, 0);
-  StringLiteral *KSL =
-      StringLiteral::Create(AST, knl, StringLiteral::Ascii, false, StrTy, SL);
+  StringLiteral *KSL = StringLiteral::Create(AST, knl, StringLiteral::Ordinary,
+                                             false, StrTy, SL);
   ImplicitCastExpr *ICE =
       ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
                                KSL, nullptr, VK_PRValue, FPOptionsOverride());
@@ -359,7 +360,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // TODO: Create AST node for nomp_for
 
-  return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), SL, SL);
+  return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), FPOptionsOverride(),
+                              SL, SL);
 }
 
 StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
