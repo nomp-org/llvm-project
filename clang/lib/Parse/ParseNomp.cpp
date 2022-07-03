@@ -30,7 +30,7 @@ enum LibNompFunc {
   NompInit = 0,
   NompUpdate = 1,
   NompJit = 2,
-  NompFor = 3,
+  NompRun = 3,
   NompFinalize = 4,
   NompErr = 5
 };
@@ -55,6 +55,16 @@ enum UpdateDirection {
 //==============================================================================
 // Helper functions: String to Nomp types conversion
 //
+static inline LibNompFunc GetLibNompFunc(const llvm::StringRef name) {
+  return llvm::StringSwitch<LibNompFunc>(name)
+      .Case("nomp_init", NompInit)
+      .Case("nomp_update", NompUpdate)
+      .Case("nomp_jit", NompJit)
+      .Case("nomp_run", NompRun)
+      .Case("nomp_finalize", NompFinalize)
+      .Default(NompInvalid);
+}
+
 static inline Directive GetDirective(const llvm::StringRef name) {
   return llvm::StringSwitch<Directive>(name)
       .Case("init", DirectiveInit)
@@ -62,16 +72,6 @@ static inline Directive GetDirective(const llvm::StringRef name) {
       .Case("for", DirectiveFor)
       .Case("finalize", DirectiveFinalize)
       .Default(DirectiveInvalid);
-}
-
-static inline LibNompFunc GetLibNompFunc(const llvm::StringRef name) {
-  return llvm::StringSwitch<LibNompFunc>(name)
-      .Case("nomp_init", NompInit)
-      .Case("nomp_update", NompUpdate)
-      .Case("nomp_jit", NompJit)
-      .Case("nomp_for", NompFor)
-      .Case("nomp_finalize", NompFinalize)
-      .Default(NompInvalid);
 }
 
 static inline UpdateDirection GetUpdateDirection(const llvm::StringRef dirn) {
@@ -160,6 +160,22 @@ static CallExpr *CreateCallExpr(const ASTContext &AST, const SourceLocation &SL,
                           ExprValueKind::VK_PRValue, SL, FPOptionsOverride());
 }
 
+static bool FindLibNompFuncDecl(llvm::StringRef LNF, Sema &S) {
+  LibNompFunc FN = GetLibNompFunc(LNF);
+  if (FN == NompInvalid)
+    return false;
+
+  IdentifierInfo &I = S.getASTContext().Idents.get(LNF);
+  DeclarationName DN = DeclarationName(&I);
+  LibNompFuncs[FN] = dyn_cast_or_null<FunctionDecl>(
+      S.LookupSingleName(S.TUScope, DN, SourceLocation(),
+                         Sema::LookupNameKind::LookupOrdinaryName));
+  return LibNompFuncs[FN] != nullptr;
+}
+
+//==============================================================================
+// Parse and generate calls for Nomp API functions
+//
 int Parser::ParseNompExpr(llvm::SmallVector<Expr *, 16> &EL) {
   ExprResult LHS = ParseAssignmentExpression();
   ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
@@ -181,9 +197,6 @@ void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
     NompHandleError3(diag::err_nomp_rparen_expected, Tok, Pragma, *this);
 }
 
-//==============================================================================
-// Parse and generate calls for Nomp API functions
-//
 StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
@@ -361,7 +374,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
                                KSL, nullptr, VK_PRValue, FPOptionsOverride());
   FuncArgs.push_back(ICE);
   Stmts.push_back(CreateCallExpr(AST, SL, ArrayRef<Expr *>(FuncArgs),
-                                 LibNompFuncs[NompFor]));
+                                 LibNompFuncs[NompJit]));
 
   // TODO: Create AST node for nomp_for
 
@@ -395,20 +408,17 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
 //         annot_pragma_nomp_end
 //
 StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
-  // Lookup libnomp API functions
-  ASTContext &ast = this->getActions().getASTContext();
-  TranslationUnitDecl *TUD = ast.getTranslationUnitDecl();
-  DeclContext *DC = TUD->castToDeclContext(TUD);
-  for (auto d = DC->decls_begin(); d != DC->decls_end(); d++) {
-    if (FunctionDecl *decl = dyn_cast<FunctionDecl>(*d)) {
-      LibNompFunc FN = GetLibNompFunc(decl->getNameInfo().getAsString());
-      if (FN != NompInvalid)
-        LibNompFuncs[FN] = decl;
-    }
-  }
+  // Fill the libnomp function declaration array: LibNompFuncs
+  Sema &S = getActions();
+  FindLibNompFuncDecl("nomp_init", S);
+  FindLibNompFuncDecl("nomp_update", S);
+  FindLibNompFuncDecl("nomp_jit", S);
+  FindLibNompFuncDecl("nomp_run", S);
+  FindLibNompFuncDecl("nomp_finalize", S);
 
   SourceLocation SL = Tok.getLocation();
-  ConsumeAnnotationToken(); // tok::annot_pragma_nomp
+  // tok::annot_pragma_nomp
+  ConsumeAnnotationToken();
 
   StmtResult result = StmtEmpty();
   llvm::StringRef DN("");
