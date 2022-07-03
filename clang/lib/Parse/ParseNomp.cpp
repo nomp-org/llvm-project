@@ -78,49 +78,63 @@ GetNompUpdateDirection(const llvm::StringRef dirn) {
       .Default(NompUpdateInvalid);
 }
 
+static inline void NompHandleError(unsigned DiagID, Token &Tok, Parser &P,
+                                   int LO = 0) {
+  Preprocessor &PP = P.getPreprocessor();
+  SourceManager &SM = PP.getSourceManager();
+  FullSourceLoc loc(Tok.getLocation(), SM);
+  if (LO)
+    PP.Diag(Tok, DiagID) << loc.getLineNumber();
+  else
+    PP.Diag(Tok, DiagID) << loc.getLineNumber() << loc.getColumnNumber();
+  P.SkipUntil(tok::annot_pragma_nomp_end);
+}
+
+static inline void NompHandleError3(unsigned DiagID, Token &Tok,
+                                    llvm::StringRef Arg, Parser &P) {
+  Preprocessor &PP = P.getPreprocessor();
+  SourceManager &SM = PP.getSourceManager();
+  FullSourceLoc loc(Tok.getLocation(), SM);
+  PP.Diag(Tok, DiagID) << Arg << loc.getLineNumber() << loc.getColumnNumber();
+  P.SkipUntil(tok::annot_pragma_nomp_end);
+}
 //==============================================================================
 // Helper functions: Tokens to Clang Stmt conversions
 //
 static bool GetVariableAsFuncArg(ImplicitCastExpr *&ICE, VarDecl *&VD,
-                                 Token &tok, Parser &p) {
-  Preprocessor &pp = p.getPreprocessor();
-  SourceManager &sm = pp.getSourceManager();
-  Sema &sema = p.getActions();
-  ASTContext &ast = sema.getASTContext();
+                                 Token &tok, Parser &P) {
+  Sema &S = P.getActions();
+  ASTContext &AST = S.getASTContext();
 
-  FullSourceLoc loc(tok.getLocation(), sm);
   tok::TokenKind TK = tok.getKind();
   if (TK != tok::identifier) {
     // If the token is not an identifier, it is an error
-    pp.Diag(tok, diag::err_nomp_identifier_expected)
-        << loc.getLineNumber() << loc.getColumnNumber();
-    p.SkipUntil(tok::annot_pragma_nomp_end);
+    NompHandleError(diag::err_nomp_identifier_expected, tok, P);
   } else {
     // Check for the declation of the identifier in current scope and
     // If not found, check on the translation Unit scope. If not found
     // in thre either, it's an error.
     DeclarationName DN = DeclarationName(tok.getIdentifierInfo());
     VD = dyn_cast_or_null<VarDecl>(
-        sema.LookupSingleName(p.getCurScope(), DN, SourceLocation(),
-                              Sema::LookupNameKind::LookupOrdinaryName));
+        S.LookupSingleName(P.getCurScope(), DN, SourceLocation(),
+                           Sema::LookupNameKind::LookupOrdinaryName));
     if (!VD)
       VD = dyn_cast_or_null<VarDecl>(
-          sema.LookupSingleName(sema.TUScope, DN, SourceLocation(),
-                                Sema::LookupNameKind::LookupOrdinaryName));
+          S.LookupSingleName(S.TUScope, DN, SourceLocation(),
+                             Sema::LookupNameKind::LookupOrdinaryName));
 
     if (VD) {
       DeclRefExpr *DRE = DeclRefExpr::Create(
-          ast, NestedNameSpecifierLoc(), SourceLocation(), VD, false,
-          tok.getLocation(), VD->getType(), ExprValueKind::VK_PRValue);
-      ICE = ImplicitCastExpr::Create(
-          ast, VD->getType(), CastKind::CK_LValueToRValue, DRE, nullptr,
-          ExprValueKind::VK_PRValue, FPOptionsOverride());
+          AST, NestedNameSpecifierLoc(), SourceLocation(), VD, false,
+          tok.getLocation(), VD->getType(), VK_PRValue);
+      ICE = ImplicitCastExpr::Create(AST, VD->getType(), CK_LValueToRValue, DRE,
+                                     nullptr, VK_PRValue, FPOptionsOverride());
+      P.ConsumeToken();
       return true;
     }
 
     // Variable declaration not found
-    pp.Diag(tok, diag::err_nomp_no_vardecl_found)
-        << DN.getAsString() << loc.getLineNumber() << loc.getColumnNumber();
+    NompHandleError3(diag::err_nomp_no_vardecl_found, tok, DN.getAsString(), P);
   }
 
   return false;
@@ -141,86 +155,58 @@ static CallExpr *CreateCallExpr(const ASTContext &AST, const SourceLocation &SL,
                           ExprValueKind::VK_PRValue, SL, FPOptionsOverride());
 }
 
-int Parser::ParseNompExpr(llvm::SmallVector<Expr *, 16> &ExprList) {
+int Parser::ParseNompExpr(llvm::SmallVector<Expr *, 16> &EL) {
   ExprResult LHS = ParseAssignmentExpression();
   ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
-  if (ER.isUsable()) {
-    ExprList.push_back(ER.getAs<Expr>());
-    return 0;
-  }
-  return 1;
+  if (ER.isUsable())
+    EL.push_back(ER.getAs<Expr>());
+  return !ER.isUsable();
 }
 
-void Parser::ParseNompExprListUntilRParen(
-    llvm::SmallVector<Expr *, 16> &ExprList, llvm::StringRef Pragma) {
-  Preprocessor &pp = getPreprocessor();
-  SourceManager &sm = pp.getSourceManager();
-
+void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
+                                          llvm::StringRef Pragma) {
   while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
-    ParseNompExpr(ExprList);
-    if (Tok.isNot(tok::r_paren)) {
-      if (!TryConsumeToken(tok::comma)) {
-        FullSourceLoc loc(Tok.getLocation(), sm);
-        pp.Diag(Tok, diag::err_nomp_comma_expected)
-            << Pragma << loc.getLineNumber() << loc.getColumnNumber();
-        SkipUntil(tok::annot_pragma_nomp_end);
-      }
-    }
+    ParseNompExpr(EL);
+    if (Tok.isNot(tok::r_paren))
+      if (!TryConsumeToken(tok::comma))
+        NompHandleError3(diag::err_nomp_comma_expected, Tok, Pragma, *this);
   }
 
-  if (!TryConsumeToken(tok::r_paren)) {
-    FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_rparen_expected)
-        << Pragma << loc.getLineNumber() << loc.getColumnNumber();
-    SkipUntil(tok::annot_pragma_nomp_end);
-  }
+  if (!TryConsumeToken(tok::r_paren))
+    NompHandleError3(diag::err_nomp_rparen_expected, Tok, Pragma, *this);
 }
 
 //==============================================================================
 // Parse and generate calls for Nomp API functions
 //
 StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
-  Preprocessor &pp = getPreprocessor();
-  SourceManager &sm = pp.getSourceManager();
-  Sema &sema = getActions();
-  ASTContext &ast = sema.getASTContext();
+  Sema &S = getActions();
+  ASTContext &AST = S.getASTContext();
 
   // "("
   if (!TryConsumeToken(tok::l_paren)) {
-    FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_lparen_expected)
-        << "init" << loc.getLineNumber() << loc.getColumnNumber();
-    SkipUntil(tok::annot_pragma_nomp_end);
+    NompHandleError3(diag::err_nomp_lparen_expected, Tok, "init", *this);
     return StmtEmpty();
   }
 
   llvm::SmallVector<Expr *, 16> CallArgs;
   ParseNompExprListUntilRParen(CallArgs, "init");
-  ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
-
   if (CallArgs.size() != 3) {
-    FullSourceLoc loc(SL, sm);
-    pp.Diag(Tok, diag::err_nomp_invalid_number_of_args)
-        << CallArgs.size() << "init" << 3 << loc.getLineNumber();
-    SkipUntil(tok::annot_pragma_nomp_end);
+    NompHandleError3(diag::err_nomp_invalid_number_of_args, Tok, "init", *this);
     return StmtEmpty();
   }
 
-  return CreateCallExpr(ast, SL, ArrayRef<Expr *>(CallArgs),
+  ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
+  return CreateCallExpr(AST, SL, ArrayRef<Expr *>(CallArgs),
                         NompFuncDecls[NompInit]);
 }
 
 StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
-  Preprocessor &PP = getPreprocessor();
-  SourceManager &SM = PP.getSourceManager();
   ASTContext &AST = getActions().getASTContext();
 
   // "("
   if (!TryConsumeToken(tok::l_paren)) {
-    FullSourceLoc loc(Tok.getLocation(), SM);
-    PP.Diag(Tok, diag::err_nomp_lparen_expected)
-        << "update" << loc.getLineNumber() << loc.getColumnNumber();
-    SkipUntil(tok::annot_pragma_nomp_end);
+    NompHandleError3(diag::err_nomp_lparen_expected, Tok, "update", *this);
     return StmtEmpty();
   }
 
@@ -230,21 +216,14 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     dirn = GetNompUpdateDirection(Tok.getIdentifierInfo()->getName());
 
   if (dirn == NompUpdateInvalid) {
-    FullSourceLoc loc(Tok.getLocation(), SM);
-    PP.Diag(Tok, diag::err_nomp_invalid_update_direction)
-        << loc.getLineNumber() << loc.getColumnNumber();
-    SkipUntil(tok::annot_pragma_nomp_end);
+    NompHandleError(diag::err_nomp_invalid_update_direction, Tok, *this);
     return StmtEmpty();
-  } else {
-    ConsumeToken();
   }
+  ConsumeToken();
 
   // ":"
   if (!TryConsumeToken(tok::colon)) {
-    FullSourceLoc loc(Tok.getLocation(), SM);
-    PP.Diag(Tok, diag::err_nomp_colon_expected)
-        << "update" << loc.getLineNumber() << loc.getColumnNumber();
-    SkipUntil(tok::annot_pragma_nomp_end);
+    NompHandleError3(diag::err_nomp_colon_expected, Tok, "update", *this);
     return StmtEmpty();
   }
 
@@ -257,46 +236,33 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     // Array pointer
     ImplicitCastExpr *ICE;
     VarDecl *VD;
-    if (!GetVariableAsFuncArg(ICE, VD, Tok, *this)) {
-      SkipUntil(tok::annot_pragma_nomp_end);
+    if (!GetVariableAsFuncArg(ICE, VD, Tok, *this))
       return StmtEmpty();
-    }
+
     const Type *T = ICE->getType().getTypePtr();
     if (!T->isPointerType()) {
-      FullSourceLoc loc(Tok.getLocation(), SM);
-      PP.Diag(Tok, diag::err_nomp_pointer_type_expected)
-          << "update" << loc.getLineNumber() << loc.getColumnNumber();
-      SkipUntil(tok::annot_pragma_nomp_end);
+      NompHandleError3(diag::err_nomp_pointer_type_expected, Tok, "update",
+                       *this);
       return StmtEmpty();
     }
-    ConsumeToken();
     FuncArgs.push_back(ICE);
 
     // Start offset
     if (!TryConsumeToken(tok::l_square)) {
-      FullSourceLoc loc(Tok.getLocation(), SM);
-      PP.Diag(Tok, diag::err_nomp_lsquare_expected)
-          << "update" << loc.getLineNumber() << loc.getColumnNumber();
-      SkipUntil(tok::annot_pragma_nomp_end);
+      NompHandleError3(diag::err_nomp_lsquare_expected, Tok, "update", *this);
       return StmtEmpty();
     }
     ParseNompExpr(FuncArgs);
 
     // End offset
     if (!TryConsumeToken(tok::comma)) {
-      FullSourceLoc loc(Tok.getLocation(), SM);
-      PP.Diag(Tok, diag::err_nomp_comma_expected)
-          << "update" << loc.getLineNumber() << loc.getColumnNumber();
-      SkipUntil(tok::annot_pragma_nomp_end);
+      NompHandleError3(diag::err_nomp_comma_expected, Tok, "update", *this);
       return StmtEmpty();
     }
     ParseNompExpr(FuncArgs);
 
     if (!TryConsumeToken(tok::r_square)) {
-      FullSourceLoc loc(Tok.getLocation(), SM);
-      PP.Diag(Tok, diag::err_nomp_rsquare_expected)
-          << "update" << loc.getLineNumber() << loc.getColumnNumber();
-      SkipUntil(tok::annot_pragma_nomp_end);
+      NompHandleError3(diag::err_nomp_rsquare_expected, Tok, "update", *this);
       return StmtEmpty();
     }
 
@@ -312,37 +278,28 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
   }
 
   if (!TryConsumeToken(tok::r_paren)) {
-    FullSourceLoc loc(Tok.getLocation(), SM);
-    PP.Diag(Tok, diag::err_nomp_rparen_expected)
-        << "update" << loc.getLineNumber() << loc.getColumnNumber();
-    SkipUntil(tok::annot_pragma_nomp_end);
+    NompHandleError3(diag::err_nomp_rparen_expected, Tok, "update", *this);
     return StmtEmpty();
   }
 
   SourceLocation EL = Tok.getLocation();
-  SkipUntil(tok::annot_pragma_nomp_end);
+  ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
   return CompoundStmt::Create(AST, ArrayRef<Stmt *>(FuncCalls), SL, EL);
 }
 
 StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
-  Preprocessor &pp = getPreprocessor();
-  SourceManager &sm = pp.getSourceManager();
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
 
   if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
-    FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_eod_expected)
-        << "for" << loc.getLineNumber() << loc.getColumnNumber();
+    NompHandleError3(diag::err_nomp_eod_expected, Tok, "for", *this);
     return StmtEmpty();
   }
 
   // Check if the next token is tok::kw_for. If not, exit. We should skip
   // comments if they exist -- but not doing it right now. TODO for future.
   if (Tok.isNot(tok::kw_for)) {
-    FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_for_expected)
-        << "for" << loc.getLineNumber() << loc.getColumnNumber();
+    NompHandleError3(diag::err_nomp_for_expected, Tok, "for", *this);
     return StmtEmpty();
   }
 
@@ -379,9 +336,9 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Second argument to nomp_jit() is the kernel string (or the for loop)
   SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
-  unsigned s = sm.getFileOffset(BL), e = sm.getFileOffset(EL);
-
-  llvm::StringRef bfr = sm.getBufferData(sm.getFileID(BL));
+  SourceManager &SM = getPreprocessor().getSourceManager();
+  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
+  llvm::StringRef bfr = SM.getBufferData(SM.getFileID(BL));
   unsigned n = e;
   for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
     ;
@@ -400,23 +357,20 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Stmts.push_back(CreateCallExpr(AST, SL, ArrayRef<Expr *>(FuncArgs),
                                  NompFuncDecls[NompFor]));
 
+  // TODO: Create AST node for nomp_for
+
   return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), SL, SL);
 }
 
 StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
-  Preprocessor &pp = getPreprocessor();
-  SourceManager &sm = pp.getSourceManager();
-  Sema &sema = getActions();
-  ASTContext &ast = sema.getASTContext();
+  ASTContext &AST = getActions().getASTContext();
 
   if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
-    FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_eod_expected)
-        << "finalize" << loc.getLineNumber() << loc.getColumnNumber();
+    NompHandleError3(diag::err_nomp_eod_expected, Tok, "finalize", *this);
     return StmtEmpty();
   }
 
-  return CreateCallExpr(ast, SL, ArrayRef<Expr *>(),
+  return CreateCallExpr(AST, SL, ArrayRef<Expr *>(),
                         NompFuncDecls[NompFinalize]);
 }
 
@@ -434,10 +388,6 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
 //         annot_pragma_nomp_end
 //
 StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
-  assert(Tok.is(tok::annot_pragma_nomp));
-  Preprocessor &pp = this->getPreprocessor();
-  SourceManager &sm = pp.getSourceManager();
-
   if (numNompFuncDecls == 0) {
     ASTContext &ast = this->getActions().getASTContext();
     TranslationUnitDecl *TUD = ast.getTranslationUnitDecl();
@@ -455,24 +405,19 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   }
 
   SourceLocation SL = Tok.getLocation();
-  pp.Lex(Tok);
+  ConsumeAnnotationToken(); // tok::annot_pragma_nomp
 
-  llvm::StringRef DN;
+  StmtResult result = StmtEmpty();
+  llvm::StringRef DN("");
   if (Tok.is(tok::identifier))
     DN = Tok.getIdentifierInfo()->getName();
   else if (Tok.is(tok::kw_for))
     DN = llvm::StringRef("for");
+  else
+    return result;
+  ConsumeToken();
 
   NompDirectiveKind D = GetNompDirectiveKind(DN);
-
-  if (D == NompInvalid) {
-    FullSourceLoc loc(Tok.getLocation(), sm);
-    pp.Diag(Tok, diag::err_nomp_invalid_directive) << loc.getLineNumber();
-  } else {
-    ConsumeToken();
-  }
-
-  StmtResult result = StmtEmpty();
   switch (D) {
   case NompInit:
     result = ParseNompInit(SL);
@@ -487,6 +432,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
     result = ParseNompFinalize(SL);
     break;
   case NompInvalid:
+    NompHandleError(diag::err_nomp_invalid_directive, Tok, *this, 1);
     break;
   }
 
