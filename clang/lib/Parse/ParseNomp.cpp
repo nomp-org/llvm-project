@@ -46,10 +46,10 @@ enum Directive {
 
 enum UpdateDirection {
   UpdateInvalid = -1,
-  UpdateTo = 0,
-  UpdateFrom = 1,
-  UpdateAlloc = 2,
-  UpdateFree = 3
+  UpdateAlloc = 1,
+  UpdateTo = 2,
+  UpdateFrom = 4,
+  UpdateFree = 8
 };
 
 //==============================================================================
@@ -284,14 +284,22 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
       return StmtEmpty();
     }
 
-    // sizeof()
+    // Unit size: sizeof()
     QualType CT = T->getPointeeOrArrayElementType()->getCanonicalTypeInternal();
     UnaryExprOrTypeTraitExpr *UETT = new (AST) UnaryExprOrTypeTraitExpr(
         UETT_SizeOf, AST.getTrivialTypeSourceInfo(CT), AST.getSizeType(),
         SourceLocation(), SourceLocation());
     FuncArgs.push_back(UETT);
+
+    // Update direction
+    QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
+    IntTy.addConst();
+    FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, dirn), IntTy,
+                                              SourceLocation()));
+
     FuncCalls.push_back(
         CreateCallExpr(AST, TL, FuncArgs, LibNompFuncs[NompUpdate]));
+
     TryConsumeToken(tok::comma);
   }
 
