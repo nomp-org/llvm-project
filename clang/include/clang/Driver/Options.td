@@ -6892,3 +6892,11 @@ def fcgl : DXCFlag<"fcgl">, Alias<emit_pristine_llvm>;
 def enable_16bit_types : DXCFlag<"enable-16bit-types">, Alias<fnative_half_type>,
   HelpText<"Enable 16-bit types and disable min precision types."
            "Available in HLSL 2018 and shader model 6.2.">;
+
+//===----------------------------------------------------------------------===//
+// Nomp Options
+//===----------------------------------------------------------------------===//
+
+def fnomp: Flag<["-"], "fnomp">, Group<f_Group>, Flags<[CC1Option, NoArgumentUnused]>,
+  HelpText<"Parse Nomp pragmas and generate libnomp API calls">;
+def fno_nomp: Flag<["-"], "fno-nomp">, Group<f_Group>, Flags<[NoArgumentUnused]>;
