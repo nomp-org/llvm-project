@@ -351,8 +351,9 @@ def BufferizableOpInterface : OpInterface<"BufferizableOpInterface"> {
         /*defaultImplementation=*/[{
           assert(bbArg.getOwner()->getParentOp() == $_op &&
                  "bbArg must belong to this op");
-          auto tensorType = bbArg.getType().cast<TensorType>();
-          return bufferization::getMemRefType(tensorType, options);
+          assert(bbArg.getType().isa<TensorType>() &&
+                 "expected tensor type");
+          return bufferization::getMemRefType(bbArg, options);
         }]
       >,
       InterfaceMethod<
@@ -396,13 +397,6 @@ def BufferizableOpInterface : OpInterface<"BufferizableOpInterface"> {
           && !bufferizableOp.bufferizesToMemoryWrite(opOperand, state)
           && !bufferizableOp.getAliasingOpResult(opOperand, state).empty();
     }
-
-    // TODO: This attribute is deprecated. Use `bufferization.writable` or add
-    // a new attribute in a different dialect.
-    /// Attribute name used to mark region arguments that can be bufferized
-    /// in-place during one-shot bufferization.
-    constexpr const static ::llvm::StringLiteral
-        kInplaceableAttrName = "linalg.inplaceable";
   }];
 }
 

@@ -249,7 +249,7 @@ private:
 void DefFormat::genParser(MethodBody &os) {
   FmtContext ctx;
   ctx.addSubst("_parser", "odsParser");
-  ctx.addSubst("_ctx", "odsParser.getContext()");
+  ctx.addSubst("_ctxt", "odsParser.getContext()");
   ctx.withBuilder("odsBuilder");
   if (isa<AttrDef>(def))
     ctx.addSubst("_type", "odsType");
@@ -311,7 +311,9 @@ void DefFormat::genParser(MethodBody &os) {
     } else {
       selfOs << formatv("(*_result_{0})", param.getName());
     }
-    os << tgfmt(param.getConvertFromStorage(), &ctx.withSelf(selfOs.str()));
+    os << param.getCppType() << "("
+       << tgfmt(param.getConvertFromStorage(), &ctx.withSelf(selfOs.str()))
+       << ")";
   }
   os << ");";
 }
@@ -672,7 +674,7 @@ void DefFormat::genOptionalGroupParser(OptionalElement *el, FmtContext &ctx,
 void DefFormat::genPrinter(MethodBody &os) {
   FmtContext ctx;
   ctx.addSubst("_printer", "odsPrinter");
-  ctx.addSubst("_ctx", "getContext()");
+  ctx.addSubst("_ctxt", "getContext()");
   ctx.withBuilder("odsBuilder");
   os.indent();
   os << "::mlir::Builder odsBuilder(getContext());\n";

@@ -49,7 +49,8 @@ public:
   /// Allow the given dialects.
   ///
   /// This function adds one or multiple ALLOW entries.
-  template <typename... DialectTs> void allowDialect() {
+  template <typename... DialectTs>
+  void allowDialect() {
     // The following expands a call to allowDialectImpl for each dialect
     // in 'DialectTs'. This magic is necessary due to a limitation in the places
     // that a parameter pack can be expanded in c++11.
@@ -60,7 +61,8 @@ public:
   /// Deny the given dialects.
   ///
   /// This function adds one or multiple DENY entries.
-  template <typename... DialectTs> void denyDialect() {
+  template <typename... DialectTs>
+  void denyDialect() {
     // FIXME: In c++17 this can be simplified by using 'fold expressions'.
     (void)std::initializer_list<int>{0, (denyDialectImpl<DialectTs>(), 0)...};
   }
@@ -78,7 +80,8 @@ public:
   /// Allow the given ops.
   ///
   /// This function adds one or multiple ALLOW entries.
-  template <typename... OpTys> void allowOperation() {
+  template <typename... OpTys>
+  void allowOperation() {
     // FIXME: In c++17 this can be simplified by using 'fold expressions'.
     (void)std::initializer_list<int>{0, (allowOperationImpl<OpTys>(), 0)...};
   }
@@ -86,7 +89,8 @@ public:
   /// Deny the given ops.
   ///
   /// This function adds one or multiple DENY entries.
-  template <typename... OpTys> void denyOperation() {
+  template <typename... OpTys>
+  void denyOperation() {
     // FIXME: In c++17 this can be simplified by using 'fold expressions'.
     (void)std::initializer_list<int>{0, (denyOperationImpl<OpTys>(), 0)...};
   }
@@ -135,22 +139,26 @@ private:
   }
 
   /// Allow a dialect.
-  template <typename DialectT> void allowDialectImpl() {
+  template <typename DialectT>
+  void allowDialectImpl() {
     allowDialect(DialectT::getDialectNamespace());
   }
 
   /// Deny a dialect.
-  template <typename DialectT> void denyDialectImpl() {
+  template <typename DialectT>
+  void denyDialectImpl() {
     denyDialect(DialectT::getDialectNamespace());
   }
 
   /// Allow an op.
-  template <typename OpTy> void allowOperationImpl() {
+  template <typename OpTy>
+  void allowOperationImpl() {
     allowOperation(OpTy::getOperationName());
   }
 
   /// Deny an op.
-  template <typename OpTy> void denyOperationImpl() {
+  template <typename OpTy>
+  void denyOperationImpl() {
     denyOperation(OpTy::getOperationName());
   }
 
@@ -179,6 +187,10 @@ struct BufferizationOptions {
   /// Initializer function for dialect-specific analysis state.
   using DialectStateInitFn =
       std::function<std::unique_ptr<DialectAnalysisState>()>;
+  /// Tensor -> MemRef type converter.
+  /// Parameters: Value, memory space, bufferization options
+  using UnknownTypeConverterFn = std::function<BaseMemRefType(
+      Value, unsigned, const BufferizationOptions &)>;
 
   enum class LayoutMapOption : int8_t {
     InferLayoutMap = 0,
@@ -266,21 +278,11 @@ struct BufferizationOptions {
   LayoutMapOption functionBoundaryTypeConversion =
       LayoutMapOption::InferLayoutMap;
 
-  /// This flag controls buffer types on unknown ops (to_memref wrappers) and in
-  /// other cases where a precise memref type cannot be inferred (e.g., the
-  /// bufferization of "tensor.cast").
-  ///
-  /// * InferLayoutMap: This option is invalid and cannot be used.
-  /// * FullyDynamicLayoutMap: Assume that unknown ops have results with fully
-  ///   dynamic layout maps after bufferization. This option is most efficient
-  ///   because any layout map can be casted to a fully dynamic one.
-  /// * IdentityLayoutMap: Assume that unknown ops have results with static
-  ///   identity layout (i.e., no layout map) after bufferization. This option
-  ///   introduces additional buffer allocs and copies if the unknown op is
-  ///   eventually bufferized to an op that returns a buffer with non-identity
-  ///   layout.
-  LayoutMapOption unknownTypeConversion =
-      LayoutMapOption::FullyDynamicLayoutMap;
+  /// Type converter from tensors to memrefs. This type converter is used if no
+  /// memref type could be inferred during bufferization. By default, a type
+  /// converter that returns a memref type with a fully dynamic layout map is
+  /// used.
+  UnknownTypeConverterFn unknownTypeConverterFn = nullptr;
 
   /// Specifies whether dealloc ops should be generated along with alloc ops. If
   /// not, new memory allocations will leak.
@@ -477,6 +479,10 @@ allocateTensorForShapedValue(OpBuilder &b, Location loc, Value shapedValue,
                              bool escape, const BufferizationOptions &options,
                              bool copy = true);
 
+/// Return `true` if the allocation of the given op is guaranteed to not escape
+/// the containing block.
+bool allocationDoesNotEscape(OpResult opResult);
+
 /// Lookup the buffer for the given value. If the value was not bufferized
 /// yet, wrap it in a ToMemrefOp. Otherwise, it is the result of a ToTensorOp,
 /// from which the memref operand is returned.
@@ -505,20 +511,19 @@ OpTy replaceOpWithNewBufferizedOp(RewriterBase &rewriter, Operation *op,
   return newOp;
 }
 
-/// Return a MemRefType to which the `tensorType` can be bufferized.
+/// Return a MemRefType to which the type of the given value can be bufferized.
 ///
 /// If possible, op bufferization implementations should not use this function
 /// and instead infer precise memref types for tensor results by themselves.
 ///
-/// Unless a layout map was specified, `options.unknownTypeConverter` determines
-/// what kind of layout map will be used. For best composability (without
-/// copies), the fully dynamic layout map is used by default.
+/// Unless a layout map was specified, `options.unknownTypeConverterFn`
+/// determines what kind of layout map will be used. For best composability
+/// (without copies), the fully dynamic layout map is used by default.
 ///
 /// Note: Canonicalization patterns could clean up layout maps and infer more
 /// precise layout maps after bufferization. However, many possible
 /// canonicalizations are currently not implemented.
-BaseMemRefType getMemRefType(TensorType tensorType,
-                             const BufferizationOptions &options,
+BaseMemRefType getMemRefType(Value value, const BufferizationOptions &options,
                              MemRefLayoutAttrInterface layout = {},
                              unsigned memorySpace = 0);
 

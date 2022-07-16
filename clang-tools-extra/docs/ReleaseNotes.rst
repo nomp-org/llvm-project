@@ -132,6 +132,11 @@ New checks
 
   Detects confusable Unicode identifiers.
 
+- New :doc:`bugprone-assignment-in-if-condition
+  <clang-tidy/checks/bugprone/assignment-in-if-condition>` check.
+
+  Warns when there is an assignment within an if statement condition expression.
+
 - New :doc:`modernize-macro-to-enum
   <clang-tidy/checks/modernize/macro-to-enum>` check.
 
@@ -178,8 +183,17 @@ Changes in existing checks
 
   - Don't emit an erroneous warning on self-moves.
 
+- Improved :doc:`cert-dcl58-cpp
+  <clang-tidy/checks/cert/dcl58-cpp>` check.
+
+  The check now detects explicit template specializations that are handled specially.
+
 - Made :doc:`cert-oop57-cpp <clang-tidy/checks/cert/oop57-cpp>` more sensitive
   by checking for an arbitrary expression in the second argument of ``memset``.
+
+- Made the fix-it of :doc:`cppcoreguidelines-init-variables
+  <clang-tidy/checks/cppcoreguidelines/init-variables>` use ``false`` to initialize
+  boolean variables.
 
 - Improved :doc:`cppcoreguidelines-prefer-member-initializer
   <clang-tidy/checks/cppcoreguidelines/prefer-member-initializer>` check.

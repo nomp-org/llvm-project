@@ -2614,7 +2614,6 @@ cc_library(
         ":TosaToTensor",
         ":VectorToGPU",
         ":VectorToLLVM",
-        ":VectorToROCDL",
         ":VectorToSCF",
         ":VectorToSPIRV",
     ],
@@ -3424,6 +3423,7 @@ cc_library(
     ),
     includes = ["include"],
     deps = [
+        ":CallOpInterfaces",
         ":ControlFlowInterfaces",
         ":DataLayoutInterfaces",
         ":IR",
@@ -3676,6 +3676,7 @@ td_library(
     ],
     includes = ["include"],
     deps = [
+        ":CallInterfacesTdFiles",
         ":ControlFlowInterfacesTdFiles",
         ":FunctionInterfacesTdFiles",
         ":InferTypeOpInterfaceTdFiles",
@@ -3773,6 +3774,7 @@ cc_library(
         ":LLVMCommonConversion",
         ":Pass",
         ":ROCDLDialect",
+        ":Support",
         ":Transforms",
         "//llvm:Support",
     ],
@@ -3798,30 +3800,6 @@ cc_library(
         ":Pass",
         ":Transforms",
         "//llvm:Support",
-    ],
-)
-
-cc_library(
-    name = "VectorToROCDL",
-    srcs = [
-        "lib/Conversion/VectorToROCDL/VectorToROCDL.cpp",
-        ":ConversionPassDetail",
-    ],
-    hdrs = ["include/mlir/Conversion/VectorToROCDL/VectorToROCDL.h"],
-    includes = ["include"],
-    deps = [
-        ":ConversionPassIncGen",
-        ":FuncDialect",
-        ":FuncToLLVM",
-        ":GPUDialect",
-        ":IR",
-        ":LLVMCommonConversion",
-        ":LLVMDialect",
-        ":MemRefToLLVM",
-        ":Pass",
-        ":ROCDLDialect",
-        ":Transforms",
-        ":VectorDialect",
     ],
 )
 
@@ -3892,7 +3870,6 @@ cc_library(
         ":Transforms",
         ":VectorDialect",
         ":VectorToLLVM",
-        ":VectorToROCDL",
         ":VectorToSCF",
         "//llvm:Support",
     ],
@@ -6345,7 +6322,6 @@ cc_library(
         ":TransformsPassIncGen",
         ":VectorDialect",
         ":VectorToLLVM",
-        ":VectorToROCDL",
         ":VectorToSCF",
         ":VectorToSPIRV",
         ":VectorTransforms",
@@ -6809,6 +6785,7 @@ td_library(
         "include/mlir/Dialect/OpenMP/OmpCommon.td",
         "include/mlir/Dialect/OpenMP/OpenMPOps.td",
         "include/mlir/Dialect/OpenMP/OpenMPOpsInterfaces.td",
+        "include/mlir/Dialect/OpenMP/OpenMPTypeInterfaces.td",
     ],
     deps = [
         ":LLVMOpsTdFiles",
@@ -6851,14 +6828,6 @@ gentbl_cc_library(
             "include/mlir/Dialect/OpenMP/OpenMPOpsDialect.cpp.inc",
         ),
         (
-            ["-gen-type-interface-decls"],
-            "include/mlir/Dialect/OpenMP/OpenMPTypeInterfaces.h.inc",
-        ),
-        (
-            ["-gen-type-interface-defs"],
-            "include/mlir/Dialect/OpenMP/OpenMPTypeInterfaces.cpp.inc",
-        ),
-        (
             [
                 "-gen-attrdef-decls",
                 "-attrdefs-dialect=omp",
@@ -6879,6 +6848,24 @@ gentbl_cc_library(
     ],
     tblgen = ":mlir-tblgen",
     td_file = "include/mlir/Dialect/OpenMP/OpenMPOps.td",
+    deps = [":OpenMPOpsTdFiles"],
+)
+
+gentbl_cc_library(
+    name = "OpenMPTypeInterfacesIncGen",
+    strip_include_prefix = "include",
+    tbl_outs = [
+        (
+            ["-gen-type-interface-decls"],
+            "include/mlir/Dialect/OpenMP/OpenMPTypeInterfaces.h.inc",
+        ),
+        (
+            ["-gen-type-interface-defs"],
+            "include/mlir/Dialect/OpenMP/OpenMPTypeInterfaces.cpp.inc",
+        ),
+    ],
+    tblgen = ":mlir-tblgen",
+    td_file = "include/mlir/Dialect/OpenMP/OpenMPTypeInterfaces.td",
     deps = [":OpenMPOpsTdFiles"],
 )
 
@@ -6918,6 +6905,7 @@ cc_library(
         ":LLVMDialect",
         ":OpenMPInterfacesIncGen",
         ":OpenMPOpsIncGen",
+        ":OpenMPTypeInterfacesIncGen",
         "//llvm:Support",
     ],
 )
@@ -7446,6 +7434,9 @@ cc_library(
     ],
     includes = ["include"],
     deps = [
+        ":AffineDialect",
+        ":ArithmeticDialect",
+        ":ControlFlowDialect",
         ":IR",
         ":LinalgDialect",
         ":LinalgTransformOpsIncGen",

@@ -332,11 +332,11 @@ AffineExpr AffineParser::parseSymbolSSAIdExpr() {
 ///   affine-expr ::= integer-literal
 AffineExpr AffineParser::parseIntegerExpr() {
   auto val = getToken().getUInt64IntegerValue();
-  if (!val.hasValue() || (int64_t)val.getValue() < 0)
+  if (!val.has_value() || (int64_t)val.value() < 0)
     return emitError("constant too large for index"), nullptr;
 
   consumeToken(Token::integer);
-  return builder.getAffineConstantExpr((int64_t)val.getValue());
+  return builder.getAffineConstantExpr((int64_t)val.value());
 }
 
 /// Parses an expression that can be a valid operand of an affine expression.
@@ -598,6 +598,7 @@ ParseResult AffineParser::parseAffineMapRange(unsigned numDims,
 
 /// Parse an affine constraint.
 ///  affine-constraint ::= affine-expr `>=` `affine-expr`
+///                      | affine-expr `<=` `affine-expr`
 ///                      | affine-expr `==` `affine-expr`
 ///
 /// The constraint is normalized to
@@ -620,6 +621,15 @@ AffineExpr AffineParser::parseAffineConstraint(bool *isEq) {
       return nullptr;
     *isEq = false;
     return lhsExpr - rhsExpr;
+  }
+
+  // affine-constraint ::= `affine-expr` `<=` `affine-expr`
+  if (consumeIf(Token::less) && consumeIf(Token::equal)) {
+    AffineExpr rhsExpr = parseAffineExpr();
+    if (!rhsExpr)
+      return nullptr;
+    *isEq = false;
+    return rhsExpr - lhsExpr;
   }
 
   // affine-constraint ::= `affine-expr` `==` `affine-expr`
@@ -733,7 +743,8 @@ IntegerSet mlir::parseIntegerSet(StringRef inputStr, MLIRContext *context,
   sourceMgr.AddNewSourceBuffer(std::move(memBuffer), SMLoc());
   SymbolState symbolState;
   ParserConfig config(context);
-  ParserState state(sourceMgr, config, symbolState, /*asmState=*/nullptr);
+  ParserState state(sourceMgr, config, symbolState, /*asmState=*/nullptr,
+                    /*codeCompleteContext=*/nullptr);
   Parser parser(state);
 
   raw_ostream &os = printDiagnosticInfo ? llvm::errs() : llvm::nulls();

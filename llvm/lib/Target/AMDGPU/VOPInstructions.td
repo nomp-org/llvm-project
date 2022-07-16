@@ -1215,7 +1215,9 @@ class VOP3_Profile_Base<VOPProfile P, VOP3Features Features = VOP3_REGULAR> : VO
   let IsMAI    = !if(Features.IsMAI,    1, P.IsMAI);
   let IsPacked = !if(Features.IsPacked, 1, P.IsPacked);
 
-  let HasModifiers = !if(Features.IsMAI, 0, !or(Features.IsPacked, P.HasModifiers));
+  let HasModifiers =
+      !if (Features.IsMAI, 0,
+           !or(Features.IsPacked, Features.HasOpSel, P.HasModifiers));
 }
 
 class VOP3_Profile<VOPProfile P, VOP3Features Features = VOP3_REGULAR> : VOP3_Profile_Base<P, Features> {
@@ -1268,6 +1270,7 @@ multiclass VOP3Inst<string OpName, VOPProfile P, SDPatternOperator node = null_f
 
 class Base_VOP3_DPP16<bits<10> op, VOP_DPP_Pseudo ps, string opName = ps.OpName>
     : VOP3_DPP<op, opName, ps.Pfl, 1> {
+  let VOP3_OPSEL = ps.Pfl.HasOpSel;
   let hasSideEffects = ps.hasSideEffects;
   let Defs = ps.Defs;
   let SchedRW = ps.SchedRW;
@@ -1283,6 +1286,7 @@ class VOP3_DPP16<bits<10> op, VOP_DPP_Pseudo ps, int subtarget,
 
 class Base_VOP3_DPP8<bits<10> op, VOP_Pseudo ps, string opName = ps.OpName>
     : VOP3_DPP8<op, opName, ps.Pfl> {
+  let VOP3_OPSEL = ps.Pfl.HasOpSel;
   let hasSideEffects = ps.hasSideEffects;
   let Defs = ps.Defs;
   let SchedRW = ps.SchedRW;
@@ -1414,7 +1418,7 @@ multiclass VOP3_Realtriple_with_name_gfx11<bits<10> op, string opName,
   VOP3_Real_dpp8_with_name_gfx11<op, opName, asmName>;
 
 multiclass VOP3Only_Realtriple_with_name_gfx11<bits<10> op, string opName,
-                                           string asmName> :
+                                               string asmName> :
   VOP3_Realtriple_with_name_gfx11<op, opName, asmName, 1>;
 
 multiclass VOP3be_Realtriple_gfx11<

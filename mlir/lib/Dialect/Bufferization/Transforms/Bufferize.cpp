@@ -192,17 +192,34 @@ struct OneShotBufferizePass
       opt.printConflicts = printConflicts;
       opt.testAnalysisOnly = testAnalysisOnly;
       opt.bufferizeFunctionBoundaries = bufferizeFunctionBoundaries;
-      opt.unknownTypeConversion = parseLayoutMapOption(unknownTypeConversion);
 
-      OpFilter::Entry::FilterFn filterFn =
-          [&](Operation *op) {
-            // Filter may be specified via options.
-            if (this->dialectFilter.hasValue())
-              return llvm::is_contained(this->dialectFilter,
-                                        op->getDialect()->getNamespace());
-            // No filter specified: All other ops are allowed.
-            return true;
-          };
+      // Configure type converter.
+      BufferizationOptions::LayoutMapOption unknownTypeConversionOption =
+          parseLayoutMapOption(unknownTypeConversion);
+      opt.unknownTypeConverterFn = [=](Value value, unsigned memorySpace,
+                                       const BufferizationOptions &options) {
+        auto tensorType = value.getType().cast<TensorType>();
+        if (unknownTypeConversionOption ==
+            BufferizationOptions::LayoutMapOption::IdentityLayoutMap)
+          return bufferization::getMemRefTypeWithStaticIdentityLayout(
+              tensorType, memorySpace);
+        assert(
+            unknownTypeConversionOption ==
+                BufferizationOptions::LayoutMapOption::FullyDynamicLayoutMap &&
+            "invalid layout map option");
+        return bufferization::getMemRefTypeWithFullyDynamicLayout(tensorType,
+                                                                  memorySpace);
+      };
+
+      // Configure op filter.
+      OpFilter::Entry::FilterFn filterFn = [&](Operation *op) {
+        // Filter may be specified via options.
+        if (this->dialectFilter.hasValue())
+          return llvm::is_contained(this->dialectFilter,
+                                    op->getDialect()->getNamespace());
+        // No filter specified: All other ops are allowed.
+        return true;
+      };
       opt.opFilter.allowOperation(filterFn);
     } else {
       opt = *options;
@@ -372,10 +389,6 @@ LogicalResult bufferization::bufferizeOp(Operation *op,
                                          const BufferizationOptions &options,
                                          bool copyBeforeWrite,
                                          const OpFilter *opFilter) {
-  assert(options.unknownTypeConversion !=
-             BufferizationOptions::LayoutMapOption::InferLayoutMap &&
-         "invalid layout map option");
-
   if (copyBeforeWrite) {
     AnalysisState state(options);
     if (failed(insertTensorCopies(op, state)))
@@ -474,8 +487,11 @@ BufferizationOptions bufferization::getPartialBufferizationOptions() {
   options.allowUnknownOps = true;
   options.createDeallocs = false;
   options.enforceAliasingInvariants = false;
-  options.unknownTypeConversion =
-      BufferizationOptions::LayoutMapOption::IdentityLayoutMap;
+  options.unknownTypeConverterFn = [](Value value, unsigned memorySpace,
+                                      const BufferizationOptions &options) {
+    return getMemRefTypeWithStaticIdentityLayout(
+        value.getType().cast<TensorType>(), memorySpace);
+  };
   options.opFilter.allowDialect<BufferizationDialect>();
   return options;
 }

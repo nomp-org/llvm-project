@@ -347,6 +347,7 @@ def MyType : ... {
       // its arguments.
       return Base::get(typeParam.getContext(), ...);
     }]>,
+    TypeBuilder<(ins "int":$intParam), [{}], "IntegerType">,
   ];
 }
 ```
@@ -461,6 +462,28 @@ the builder used `TypeBuilderWithInferredContext` implies that the context
 parameter is not necessary as it can be inferred from the arguments to the
 builder.
 
+The fifth builder will generate the declaration of a builder method with a
+custom return type, like:
+
+```tablegen
+  let builders = [
+    TypeBuilder<(ins "int":$intParam), [{}], "IntegerType">,
+  ]
+```
+
+```c++
+class MyType : /*...*/ {
+  /*...*/
+  static IntegerType get(::mlir::MLIRContext *context, int intParam);
+
+};
+```
+
+This generates a builder declaration the same as the first three examples, but
+the return type of the builder is user-specified instead of the attribute or
+type class. This is useful for defining builders of attributes and types that
+may fold or canonicalize on construction.
+
 ### Parsing and Printing
 
 If a mnemonic was specified, the `hasCustomAssemblyFormat` and `assemblyFormat`
@@ -473,10 +496,10 @@ one for printing. These static functions placed alongside the class definitions
 and have the following function signatures:
 
 ```c++
-static ParseResult generatedAttributeParser(DialectAsmParser& parser, StringRef mnemonic, Type attrType, Attribute &result);
+static ParseResult generatedAttributeParser(DialectAsmParser& parser, StringRef *mnemonic, Type attrType, Attribute &result);
 static LogicalResult generatedAttributePrinter(Attribute attr, DialectAsmPrinter& printer);
 
-static ParseResult generatedTypeParser(DialectAsmParser& parser, StringRef mnemonic, Type &result);
+static ParseResult generatedTypeParser(DialectAsmParser& parser, StringRef *mnemonic, Type &result);
 static LogicalResult generatedTypePrinter(Type type, DialectAsmPrinter& printer);
 ```
 
@@ -673,10 +696,10 @@ Which will look like:
 ```
 
 For optional `Attribute` or `Type` parameters, the current MLIR context is
-available through `$_ctx`. E.g.
+available through `$_ctxt`. E.g.
 
 ```tablegen
-DefaultValuedParameter<"IntegerType", "IntegerType::get($_ctx, 32)">
+DefaultValuedParameter<"IntegerType", "IntegerType::get($_ctxt, 32)">
 ```
 
 ##### Assembly Format Directives

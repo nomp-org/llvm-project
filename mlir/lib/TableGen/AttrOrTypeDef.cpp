@@ -20,7 +20,11 @@ using namespace mlir::tblgen;
 // AttrOrTypeBuilder
 //===----------------------------------------------------------------------===//
 
-/// Returns true if this builder is able to infer the MLIRContext parameter.
+Optional<StringRef> AttrOrTypeBuilder::getReturnType() const {
+  Optional<StringRef> type = def->getValueAsOptionalString("returnType");
+  return type && !type->empty() ? type : llvm::None;
+}
+
 bool AttrOrTypeBuilder::hasInferredContextParameter() const {
   return def->getValueAsBit("hasInferredContextParam");
 }
@@ -81,11 +85,13 @@ AttrOrTypeDef::AttrOrTypeDef(const llvm::Record *def) : def(def) {
                     "'assemblyFormat' or 'hasCustomAssemblyFormat' can only be "
                     "used when 'mnemonic' is set");
   }
-  // Assembly format parser requires default builders to be generated.
+  // Assembly format parser requires builders with the same prototype
+  // as the default-builders.
+  // TODO: attempt to detect when a custom builder matches the prototype.
   if (hasDeclarativeFormat && skipDefaultBuilders()) {
-    PrintFatalError(
-        getLoc(),
-        "'assemblyFormat' requires 'skipDefaultBuilders' to be false");
+    PrintWarning(getLoc(),
+                 "using 'assemblyFormat' with 'skipDefaultBuilders=1' may "
+                 "result in C++ compilation errors");
   }
   // Assembly format printer requires accessors to be generated.
   if (hasDeclarativeFormat && !genAccessors()) {
@@ -237,7 +243,7 @@ StringRef AttrOrTypeParameter::getComparator() const {
 StringRef AttrOrTypeParameter::getCppType() const {
   if (auto *stringType = dyn_cast<llvm::StringInit>(getDef()))
     return stringType->getValue();
-  return getDefValue<llvm::StringInit>("cppType").getValue();
+  return getDefValue<llvm::StringInit>("cppType").value();
 }
 
 StringRef AttrOrTypeParameter::getCppAccessorType() const {

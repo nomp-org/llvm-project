@@ -26,6 +26,11 @@ def SDT_LoongArchIntBinOpW : SDTypeProfile<1, 2, [
   SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>, SDTCisVT<0, i64>
 ]>;
 
+def SDT_LoongArchBStrIns: SDTypeProfile<1, 4, [
+  SDTCisInt<0>, SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>, SDTCisInt<3>,
+  SDTCisSameAs<3, 4>
+]>;
+
 def SDT_LoongArchBStrPick: SDTypeProfile<1, 3, [
   SDTCisInt<0>, SDTCisSameAs<0, 1>, SDTCisInt<2>, SDTCisSameAs<2, 3>
 ]>;
@@ -46,6 +51,8 @@ def loongarch_ret : SDNode<"LoongArchISD::RET", SDTNone,
 def loongarch_sll_w : SDNode<"LoongArchISD::SLL_W", SDT_LoongArchIntBinOpW>;
 def loongarch_sra_w : SDNode<"LoongArchISD::SRA_W", SDT_LoongArchIntBinOpW>;
 def loongarch_srl_w : SDNode<"LoongArchISD::SRL_W", SDT_LoongArchIntBinOpW>;
+def loongarch_bstrins
+    : SDNode<"LoongArchISD::BSTRINS", SDT_LoongArchBStrIns>;
 def loongarch_bstrpick
     : SDNode<"LoongArchISD::BSTRPICK", SDT_LoongArchBStrPick>;
 
@@ -164,6 +171,11 @@ def NegImm : SDNodeXForm<imm, [{
                                    N->getValueType(0));
 }]>;
 
+// FP immediate patterns.
+def fpimm0    : PatLeaf<(fpimm), [{return N->isExactlyValue(+0.0);}]>;
+def fpimm0neg : PatLeaf<(fpimm), [{return N->isExactlyValue(-0.0);}]>;
+def fpimm1    : PatLeaf<(fpimm), [{return N->isExactlyValue(+1.0);}]>;
+
 def CallSymbol: AsmOperandClass {
   let Name = "CallSymbol";
   let RenderMethod = "addImmOperands";
@@ -174,6 +186,8 @@ def CallSymbol: AsmOperandClass {
 def call_symbol : Operand<iPTR> {
   let ParserMatchClass = CallSymbol;
 }
+
+def BaseAddr : ComplexPattern<iPTR, 1, "SelectBaseAddr">;
 
 //===----------------------------------------------------------------------===//
 // Instruction Formats
@@ -308,10 +322,12 @@ def XORI : ALU_2RI12<0b0000001111, "xori", uimm12>;
 def MUL_W   : ALU_3R<0b00000000000111000, "mul.w">;
 def MULH_W  : ALU_3R<0b00000000000111001, "mulh.w">;
 def MULH_WU : ALU_3R<0b00000000000111010, "mulh.wu">;
+let usesCustomInserter = true in {
 def DIV_W   : ALU_3R<0b00000000001000000, "div.w">;
 def MOD_W   : ALU_3R<0b00000000001000001, "mod.w">;
 def DIV_WU  : ALU_3R<0b00000000001000010, "div.wu">;
 def MOD_WU  : ALU_3R<0b00000000001000011, "mod.wu">;
+} // usesCustomInserter = true
 
 // Bit-shift Instructions
 def SLL_W  : ALU_3R<0b00000000000101110, "sll.w">;
@@ -413,10 +429,12 @@ def MULH_D    : ALU_3R<0b00000000000111100, "mulh.d">;
 def MULH_DU   : ALU_3R<0b00000000000111101, "mulh.du">;
 def MULW_D_W  : ALU_3R<0b00000000000111110, "mulw.d.w">;
 def MULW_D_WU : ALU_3R<0b00000000000111111, "mulw.d.wu">;
+let usesCustomInserter = true in {
 def DIV_D     : ALU_3R<0b00000000001000100, "div.d">;
 def MOD_D     : ALU_3R<0b00000000001000101, "mod.d">;
 def DIV_DU    : ALU_3R<0b00000000001000110, "div.du">;
 def MOD_DU    : ALU_3R<0b00000000001000111, "mod.du">;
+} // usesCustomInserter = true
 
 // Bit-shift Instructions for 64-bits
 def SLL_D  : ALU_3R<0b00000000000110001, "sll.d">;
@@ -579,6 +597,9 @@ def shiftMaskGRLen
     : ComplexPattern<GRLenVT, 1, "selectShiftMaskGRLen", [], [], 0>;
 def shiftMask32 : ComplexPattern<i64, 1, "selectShiftMask32", [], [], 0>;
 
+def sexti32 : ComplexPattern<i64, 1, "selectSExti32">;
+def zexti32 : ComplexPattern<i64, 1, "selectZExti32">;
+
 class shiftop<SDPatternOperator operator>
     : PatFrag<(ops node:$val, node:$count),
               (operator node:$val, (GRLenVT (shiftMaskGRLen node:$count)))>;
@@ -590,6 +611,13 @@ let Predicates = [IsLA32] in {
 def : PatGprGpr<add, ADD_W>;
 def : PatGprImm<add, ADDI_W, simm12>;
 def : PatGprGpr<sub, SUB_W>;
+def : PatGprGpr<sdiv, DIV_W>;
+def : PatGprGpr<udiv, DIV_WU>;
+def : PatGprGpr<srem, MOD_W>;
+def : PatGprGpr<urem, MOD_WU>;
+def : PatGprGpr<mul, MUL_W>;
+def : PatGprGpr<mulhs, MULH_W>;
+def : PatGprGpr<mulhu, MULH_WU>;
 } // Predicates = [IsLA32]
 
 let Predicates = [IsLA64] in {
@@ -599,6 +627,24 @@ def : PatGprImm<add, ADDI_D, simm12>;
 def : PatGprImm_32<add, ADDI_W, simm12>;
 def : PatGprGpr<sub, SUB_D>;
 def : PatGprGpr_32<sub, SUB_W>;
+def : PatGprGpr<sdiv, DIV_D>;
+def : PatGprGpr<udiv, DIV_DU>;
+def : PatGprGpr<srem, MOD_D>;
+def : PatGprGpr<urem, MOD_DU>;
+// TODO: Select "_W[U]" instructions for i32xi32 if only lower 32 bits of the
+// product are used.
+def : PatGprGpr<mul, MUL_D>;
+def : PatGprGpr<mulhs, MULH_D>;
+def : PatGprGpr<mulhu, MULH_DU>;
+// Select MULW_D_W for calculating the full 64 bits product of i32xi32 signed
+// multiplication.
+def : Pat<(i64 (mul (sext_inreg GPR:$rj, i32), (sext_inreg GPR:$rk, i32))),
+          (MULW_D_W GPR:$rj, GPR:$rk)>;
+// Select MULW_D_WU for calculating the full 64 bits product of i32xi32
+// unsigned multiplication.
+def : Pat<(i64 (mul (loongarch_bstrpick GPR:$rj, (i64 31), (i64 0)),
+                    (loongarch_bstrpick GPR:$rk, (i64 31), (i64 0)))),
+          (MULW_D_WU GPR:$rj, GPR:$rk)>;
 } // Predicates = [IsLA64]
 
 def : PatGprGpr<and, AND>;
@@ -738,22 +784,28 @@ let isBarrier = 1, isReturn = 1, isTerminator = 1 in
 def PseudoRET : Pseudo<(outs), (ins), [(loongarch_ret)]>,
                 PseudoInstExpansion<(JIRL R0, R1, 0)>;
 
-/// BSTRPICK
+/// BSTRINS and BSTRPICK
 
-let Predicates = [IsLA32] in
+let Predicates = [IsLA32] in {
+def : Pat<(loongarch_bstrins GPR:$rd, GPR:$rj, uimm5:$msbd, uimm5:$lsbd),
+          (BSTRINS_W GPR:$rd, GPR:$rj, uimm5:$msbd, uimm5:$lsbd)>;
 def : Pat<(loongarch_bstrpick GPR:$rj, uimm5:$msbd, uimm5:$lsbd),
           (BSTRPICK_W GPR:$rj, uimm5:$msbd, uimm5:$lsbd)>;
+} // Predicates = [IsLA32]
 
-let Predicates = [IsLA64] in
+let Predicates = [IsLA64] in {
+def : Pat<(loongarch_bstrins GPR:$rd, GPR:$rj, uimm6:$msbd, uimm6:$lsbd),
+          (BSTRINS_D GPR:$rd, GPR:$rj, uimm6:$msbd, uimm6:$lsbd)>;
 def : Pat<(loongarch_bstrpick GPR:$rj, uimm6:$msbd, uimm6:$lsbd),
           (BSTRPICK_D GPR:$rj, uimm6:$msbd, uimm6:$lsbd)>;
+} // Predicates = [IsLA64]
 
 /// Loads
 
 multiclass LdPat<PatFrag LoadOp, LAInst Inst, ValueType vt = GRLenVT> {
-  def : Pat<(vt (LoadOp GPR:$rj)), (Inst GPR:$rj, 0)>;
-  def : Pat<(vt (LoadOp (add GPR:$rj, simm12:$imm12))),
-            (Inst GPR:$rj, simm12:$imm12)>;
+  def : Pat<(vt (LoadOp BaseAddr:$rj)), (Inst BaseAddr:$rj, 0)>;
+  def : Pat<(vt (LoadOp (add BaseAddr:$rj, simm12:$imm12))),
+            (Inst BaseAddr:$rj, simm12:$imm12)>;
 }
 
 defm : LdPat<sextloadi8, LD_B>;
@@ -774,10 +826,10 @@ defm : LdPat<load, LD_D, i64>;
 
 multiclass StPat<PatFrag StoreOp, LAInst Inst, RegisterClass StTy,
                  ValueType vt> {
-  def : Pat<(StoreOp (vt StTy:$rd), GPR:$rj),
-            (Inst StTy:$rd, GPR:$rj, 0)>;
-  def : Pat<(StoreOp (vt StTy:$rd), (add GPR:$rj, simm12:$imm12)),
-            (Inst StTy:$rd, GPR:$rj, simm12:$imm12)>;
+  def : Pat<(StoreOp (vt StTy:$rd), BaseAddr:$rj),
+            (Inst StTy:$rd, BaseAddr:$rj, 0)>;
+  def : Pat<(StoreOp (vt StTy:$rd), (add BaseAddr:$rj, simm12:$imm12)),
+            (Inst StTy:$rd, BaseAddr:$rj, simm12:$imm12)>;
 }
 
 defm : StPat<truncstorei8, ST_B, GPR, GRLenVT>;
@@ -786,6 +838,23 @@ defm : StPat<store, ST_W, GPR, i32>, Requires<[IsLA32]>;
 let Predicates = [IsLA64] in {
 defm : StPat<truncstorei32, ST_W, GPR, i64>;
 defm : StPat<store, ST_D, GPR, i64>;
+} // Predicates = [IsLA64]
+
+/// Atomic loads and stores
+
+def : Pat<(atomic_fence timm, timm), (DBAR 0)>;
+
+defm : LdPat<atomic_load_8, LD_B>;
+defm : LdPat<atomic_load_16, LD_H>;
+defm : LdPat<atomic_load_32, LD_W>;
+
+defm : StPat<atomic_store_8, ST_B, GPR, GRLenVT>;
+defm : StPat<atomic_store_16, ST_H, GPR, GRLenVT>;
+defm : StPat<atomic_store_32, ST_W, GPR, i32>, Requires<[IsLA32]>;
+let Predicates = [IsLA64] in {
+defm : LdPat<atomic_load_64, LD_D>;
+defm : StPat<atomic_store_32, ST_W, GPR, i64>;
+defm : StPat<atomic_store_64, ST_D, GPR, i64>;
 } // Predicates = [IsLA64]
 
 /// Other pseudo-instructions

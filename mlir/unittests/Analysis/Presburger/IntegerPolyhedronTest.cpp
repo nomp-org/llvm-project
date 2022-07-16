@@ -66,8 +66,8 @@ static void checkSample(bool hasSample, const IntegerPolyhedron &poly,
     maybeLexMin = poly.findIntegerLexMin();
 
     if (!hasSample) {
-      EXPECT_FALSE(maybeSample.hasValue());
-      if (maybeSample.hasValue()) {
+      EXPECT_FALSE(maybeSample.has_value());
+      if (maybeSample.has_value()) {
         llvm::errs() << "findIntegerSample gave sample: ";
         dump(*maybeSample);
       }
@@ -78,7 +78,7 @@ static void checkSample(bool hasSample, const IntegerPolyhedron &poly,
         dump(*maybeLexMin);
       }
     } else {
-      ASSERT_TRUE(maybeSample.hasValue());
+      ASSERT_TRUE(maybeSample.has_value());
       EXPECT_TRUE(poly.containsPoint(*maybeSample));
 
       ASSERT_FALSE(maybeLexMin.isEmpty());
@@ -608,23 +608,19 @@ TEST(IntegerPolyhedronTest, addConstantLowerBound) {
 static void checkDivisionRepresentation(
     IntegerPolyhedron &poly,
     const std::vector<SmallVector<int64_t, 8>> &expectedDividends,
-    const SmallVectorImpl<unsigned> &expectedDenominators) {
-  std::vector<SmallVector<int64_t, 8>> dividends;
-  SmallVector<unsigned, 4> denominators;
-
-  poly.getLocalReprs(dividends, denominators);
+    ArrayRef<unsigned> expectedDenominators) {
+  DivisionRepr divs = poly.getLocalReprs();
 
   // Check that the `denominators` and `expectedDenominators` match.
-  EXPECT_TRUE(expectedDenominators == denominators);
+  EXPECT_TRUE(expectedDenominators == divs.getDenoms());
 
   // Check that the `dividends` and `expectedDividends` match. If the
   // denominator for a division is zero, we ignore its dividend.
-  EXPECT_TRUE(dividends.size() == expectedDividends.size());
-  for (unsigned i = 0, e = dividends.size(); i < e; ++i) {
-    if (denominators[i] != 0) {
-      EXPECT_TRUE(expectedDividends[i] == dividends[i]);
-    }
-  }
+  EXPECT_TRUE(divs.getNumDivs() == expectedDividends.size());
+  for (unsigned i = 0, e = divs.getNumDivs(); i < e; ++i)
+    if (divs.hasRepr(i))
+      for (unsigned j = 0, f = divs.getNumVars() + 1; j < f; ++j)
+        EXPECT_TRUE(expectedDividends[i][j] == divs.getDividend(i)[j]);
 }
 
 TEST(IntegerPolyhedronTest, computeLocalReprSimple) {

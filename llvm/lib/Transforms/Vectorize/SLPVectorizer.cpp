@@ -2637,7 +2637,7 @@ private:
     AliasCacheKey key = std::make_pair(Inst1, Inst2);
     Optional<bool> &result = AliasCache[key];
     if (result) {
-      return result.getValue();
+      return result.value();
     }
     bool aliased = true;
     if (Loc1.Ptr && isSimple(Inst1))
@@ -11229,7 +11229,7 @@ public:
             return OptimizationRemarkMissed(
                        SV_NAME, "HorSLPNotBeneficial",
                        ReducedValsToOps.find(VL[0])->second.front())
-                   << "Vectorizing horizontal reduction is possible"
+                   << "Vectorizing horizontal reduction is possible "
                    << "but not beneficial with cost " << ore::NV("Cost", Cost)
                    << " and threshold "
                    << ore::NV("Threshold", -SLPCostThreshold);

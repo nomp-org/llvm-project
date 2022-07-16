@@ -746,8 +746,8 @@ Syntax::
                          <global | constant> <Type> [<InitializerConstant>]
                          [, section "name"] [, partition "name"]
                          [, comdat [($name)]] [, align <Alignment>]
-                         [, no_sanitize] [, no_sanitize_address]
-                         [, no_sanitize_hwaddress] [, sanitize_address_dyninit]
+                         [, no_sanitize_address] [, no_sanitize_hwaddress]
+                         [, sanitize_address_dyninit] [, sanitize_memtag]
                          (, !name !N)*
 
 For example, the following defines a global in a numbered address space
@@ -1678,6 +1678,10 @@ example:
     Front ends can provide optional ``srcloc`` metadata nodes on call sites of
     such callees to attach information about where in the source language such a
     call came from. A string value can be provided as a note.
+``fn_ret_thunk_extern``
+    This attribute tells the code generator that returns from functions should
+    be replaced with jumps to externally-defined architecture-specific symbols.
+    For X86, this symbol's identifier is ``__x86_return_thunk``.
 ``"frame-pointer"``
     This attribute tells the code generator whether the function
     should keep the frame pointer. The code generator may emit the frame pointer
@@ -2323,19 +2327,31 @@ Attributes may be set to communicate additional information about a global varia
 Unlike :ref:`function attributes <fnattrs>`, attributes on a global variable
 are grouped into a single :ref:`attribute group <attrgrp>`.
 
-``no_sanitize``
-    This attribute indicates that the global variable should not have any
-    sanitizers applied to it, either because it was in the sanitizer ignore
-    list, or it was annotated with
-    `__attribute__((disable_sanitizer_instrumentation))`.
 ``no_sanitize_address``
     This attribute indicates that the global variable should not have
     AddressSanitizer instrumentation applied to it, because it was annotated
-    with `__attribute__((no_sanitize("address")))`.
+    with `__attribute__((no_sanitize("address")))`,
+    `__attribute__((disable_sanitizer_instrumentation))`, or included in the
+    `-fsanitize-ignorelist` file.
 ``no_sanitize_hwaddress``
     This attribute indicates that the global variable should not have
     HWAddressSanitizer instrumentation applied to it, because it was annotated
-    with `__attribute__((no_sanitize("hwaddress")))`.
+    with `__attribute__((no_sanitize("hwaddress")))`,
+    `__attribute__((disable_sanitizer_instrumentation))`, or included in the
+    `-fsanitize-ignorelist` file.
+``sanitize_memtag``
+    This attribute indicates that the global variable should have AArch64 memory
+    tags (MTE) instrumentation applied to it. This attribute causes the
+    suppression of certain optimisations, like GlobalMerge, as well as ensuring
+    extra directives are emitted in the assembly and extra bits of metadata are
+    placed in the object file so that the linker can ensure the accesses are
+    protected by MTE. This attribute is added by clang when
+    `-fsanitize=memtag-globals` is provided, as long as the global is not marked
+    with `__attribute__((no_sanitize("memtag")))`,
+    `__attribute__((disable_sanitizer_instrumentation))`, or included in the
+    `-fsanitize-ignorelist` file. The AArch64 Globals Tagging pass may remove
+    this attribute when it's not possible to tag the global (e.g. it's a TLS
+    variable).
 ``sanitize_address_dyninit``
     This attribute indicates that the global variable, when instrumented with
     AddressSanitizer, should be checked for ODR violations. This attribute is
@@ -4679,6 +4695,17 @@ output.
 Note that clobbering named registers that are also present in output
 constraints is not legal.
 
+Label constraints
+"""""""""""""""""
+
+A label constraint is indicated by a "``!``" prefix and typically used in the
+form ``"!i"``. Instead of consuming call arguments, label constraints consume
+indirect destination labels of ``callbr`` instructions.
+
+Label constraints can only be used in conjunction with ``callbr`` and the
+number of label constraints must match the number of indirect destination
+labels in the ``callbr`` instruction.
+
 
 Constraint Codes
 """"""""""""""""
@@ -6396,6 +6423,24 @@ final ``i1 true``).
     !1 = !{i64 2, i64 -1, i64 -1, i1 true}
     !0 = !{!1}
 
+'``exclude``' Metadata
+^^^^^^^^^^^^^^^^^^^^^^
+
+``exclude`` metadata may be attached to a global variable to signify that its
+section should not be included in the final executable or shared library. This
+option is only valid for global variables with an explicit section targeting ELF
+or COFF. This is done using the ``SHF_EXCLUDE`` flag on ELF targets and the
+``IMAGE_SCN_LNK_REMOVE`` and ``IMAGE_SCN_MEM_DISCARDABLE`` flags for COFF
+targets. Additionally, this metadata is only used as a flag, so the associated
+node must be empty. The explicit section should not conflict with any other
+sections that the user does not want removed after linking.
+
+.. code-block:: text
+
+  @object = private constant [1 x i8] c"\00", section ".foo" !exclude !0
+
+  ...
+  !0 = !{}
 
 '``unpredictable``' Metadata
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -7330,6 +7375,8 @@ functions is small.
 - "frame-pointer": **Max**. The value can be 0, 1, or 2. A synthesized function
   will get the "frame-pointer" function attribute, with value being "none",
   "non-leaf", or "all", respectively.
+- "function_return_thunk_extern": The synthesized function will get the
+  ``fn_return_thunk_extern`` function attribute.
 - "uwtable": **Max**. The value can be 0, 1, or 2. If the value is 1, a synthesized
   function will get the ``uwtable(sync)`` function attribute, if the value is 2,
   a synthesized function will get the ``uwtable(async)`` function attribute.
@@ -7428,6 +7475,19 @@ LTO Post-Link Module Flags Metadata
 Some optimisations are only when the entire LTO unit is present in the current
 module. This is represented by the ``LTOPostLink`` module flags metadata, which
 will be created with a value of ``1`` when LTO linking occurs.
+
+Embedded Objects Names Metadata
+===============================
+
+Offloading compilations need to embed device code into the host section table to
+create a fat binary. This metadata node references each global that will be
+embedded in the module. The primary use for this is to make referencing these
+globals more efficient in the IR. The metadata references nodes containing
+pointers to the global to be embedded followed by the section name it will be
+stored at::
+
+    !llvm.embedded.objects = !{!0}
+    !0 = !{ptr @object, !".section"}
 
 Automatic Linker Flags Named Metadata
 =====================================
@@ -8367,8 +8427,8 @@ This instruction requires several arguments:
 #. '``fallthrough label``': the label reached when the inline assembly's
    execution exits the bottom.
 #. '``indirect labels``': the labels reached when a callee transfers control
-   to a location other than the '``fallthrough label``'. The blockaddress
-   constant for these should also be in the list of '``function args``'.
+   to a location other than the '``fallthrough label``'. Label constraints
+   refer to these destinations.
 #. The optional :ref:`function attributes <fnattrs>` list.
 #. The optional :ref:`operand bundles <opbundles>` list.
 
@@ -8393,11 +8453,11 @@ Example:
 .. code-block:: llvm
 
       ; "asm goto" without output constraints.
-      callbr void asm "", "r,X"(i32 %x, i8 *blockaddress(@foo, %indirect))
+      callbr void asm "", "r,!i"(i32 %x)
                   to label %fallthrough [label %indirect]
 
       ; "asm goto" with output constraints.
-      <result> = callbr i32 asm "", "=r,r,X"(i32 %x, i8 *blockaddress(@foo, %indirect))
+      <result> = callbr i32 asm "", "=r,r,!i"(i32 %x)
                   to label %fallthrough [label %indirect]
 
 .. _i_resume:
@@ -10330,12 +10390,14 @@ operation. The operation must be one of the following keywords:
 -  umin
 -  fadd
 -  fsub
+-  fmax
+-  fmin
 
 For most of these operations, the type of '<value>' must be an integer
 type whose bit width is a power of two greater than or equal to eight
 and less than or equal to a target-specific size limit. For xchg, this
 may also be a floating point or a pointer type with the same size constraints
-as integers.  For fadd/fsub, this must be a floating point type.  The
+as integers.  For fadd/fsub/fmax/fmin, this must be a floating point type.  The
 type of the '``<pointer>``' operand must be a pointer to that type. If
 the ``atomicrmw`` is marked as ``volatile``, then the optimizer is not
 allowed to modify the number or order of execution of this
@@ -10372,6 +10434,8 @@ operation argument:
 -  umin: ``*ptr = *ptr < val ? *ptr : val`` (using an unsigned comparison)
 - fadd: ``*ptr = *ptr + val`` (using floating point arithmetic)
 - fsub: ``*ptr = *ptr - val`` (using floating point arithmetic)
+-  fmax: ``*ptr = maxnum(*ptr, val)`` (match the `llvm.maxnum.*`` intrinsic)
+-  fmin: ``*ptr = minnum(*ptr, val)`` (match the `llvm.minnum.*`` intrinsic)
 
 Example:
 """"""""
@@ -17331,7 +17395,7 @@ the runtime scaling factor of ``subvec``. The elements of ``vec`` starting at
 ``idx`` are overwritten with ``subvec``. Elements ``idx`` through (``idx`` +
 num_elements(``subvec``) - 1) must be valid ``vec`` indices. If this condition
 cannot be determined statically but is false at runtime, then the result vector
-is undefined.
+is a :ref:`poison value <poisonvalues>`.
 
 
 '``llvm.vector.extract``' Intrinsic
@@ -17375,9 +17439,9 @@ vector length of the result type. If the result type is a scalable vector,
 ``idx`` is first scaled by the result type's runtime scaling factor. Elements
 ``idx`` through (``idx`` + num_elements(result_type) - 1) must be valid vector
 indices. If this condition cannot be determined statically but is false at
-runtime, then the result vector is undefined. The ``idx`` parameter must be a
-vector index constant type (for most targets this will be an integer pointer
-type).
+runtime, then the result vector is a :ref:`poison value <poisonvalues>`. The
+``idx`` parameter must be a vector index constant type (for most targets this
+will be an integer pointer type).
 
 '``llvm.experimental.vector.reverse``' Intrinsic
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
