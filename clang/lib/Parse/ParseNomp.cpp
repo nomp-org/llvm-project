@@ -314,6 +314,68 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
                               FPOptionsOverride(), SL, EL);
 }
 
+static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
+                              ASTContext &AST, SourceManager &SM, VarDecl *ID,
+                              VarDecl *ND, VarDecl *GZ, VarDecl *LZ,
+                              ForStmt *FS) {
+  llvm::SmallVector<Expr *, 16> FuncArgs;
+
+  // First argument to nomp_jit() is '&id' -- output argument which assigns an
+  // unique id to each kernel.
+  DeclRefExpr *DRE =
+      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
+                          false, SourceLocation(), ID->getType(), VK_LValue);
+  FuncArgs.push_back(UnaryOperator::Create(
+      AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
+      OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
+
+  // Second argument to nomp_jit() is '&ndim' -- output argument which sets
+  // the dimension of the kernel launch.
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ND,
+                            false, SourceLocation(), ND->getType(), VK_LValue);
+  FuncArgs.push_back(UnaryOperator::Create(
+      AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
+      OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
+
+  // Third and fourth arguments are the launch parameters of the kernel: local
+  // and global size.
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), GZ,
+                            false, SourceLocation(), GZ->getType(), VK_PRValue);
+  QualType ArrayTy = LZ->getType();
+  FuncArgs.push_back(
+      ImplicitCastExpr::Create(AST, ArrayTy, CastKind::CK_ArrayToPointerDecay,
+                               DRE, nullptr, VK_PRValue, FPOptionsOverride()));
+
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), LZ,
+                            false, SourceLocation(), LZ->getType(), VK_PRValue);
+  FuncArgs.push_back(
+      ImplicitCastExpr::Create(AST, ArrayTy, CastKind::CK_ArrayToPointerDecay,
+                               DRE, nullptr, VK_PRValue, FPOptionsOverride()));
+
+  // Fourth argument to nomp_jit() is the kernel string (or the for loop)
+  SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
+  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
+  llvm::StringRef bfr = SM.getBufferData(SM.getFileID(BL));
+  unsigned n = e;
+  for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
+    ;
+
+  const char *ptr = bfr.data();
+  llvm::StringRef knl(&ptr[s], n - s + 2);
+  QualType StrTy =
+      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, knl.size() + 1),
+                               nullptr, ArrayType::Normal, 0);
+  StringLiteral *KSL = StringLiteral::Create(AST, knl, StringLiteral::Ordinary,
+                                             false, StrTy, SourceLocation());
+  FuncArgs.push_back(
+      ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
+                               KSL, nullptr, VK_PRValue, FPOptionsOverride()));
+
+  Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
+                                 ArrayRef<Expr *>(FuncArgs),
+                                 LibNompFuncs[NompJit]));
+}
+
 StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
@@ -331,60 +393,58 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   }
 
   // Parse the for statement
-  StmtResult F = ParseForStatement(nullptr);
-  ForStmt *FS = F.getAs<ForStmt>();
+  ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
 
   // We are going to create all our statements (declarations, function calls)
   // into the following vector and then create a compound statement out of it.
   llvm::SmallVector<Stmt *, 16> Stmts;
 
-  // First, let's create the statement `int id = -1` which is passed as an
-  // output argument to nomp_jit()
-  QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
+  // We will collect the DeclStmt in the following array.
+  llvm::SmallVector<Decl *, 3> D;
+
+  // First, let's create the statement `static int id = -1, ndim = -1;` both of
+  // which are passed as output arguments to nomp_jit()
+  QualType IntTy = AST.getIntTypeForBitwidth(32, 1);
   VarDecl *ID =
       VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("id"), IntTy,
                       AST.getTrivialTypeSourceInfo(IntTy), SC_Static);
-  ID->setInit(UnaryOperator::Create(
+  UnaryOperator *M1 = UnaryOperator::Create(
       AST, IntegerLiteral::Create(AST, llvm::APInt(32, 1), IntTy, SL), UO_Minus,
-      IntTy, VK_LValue, OK_Ordinary, SL, false, FPOptionsOverride()));
-  llvm::SmallVector<Decl *, 1> D;
+      IntTy, VK_LValue, OK_Ordinary, SL, false, FPOptionsOverride());
+  ID->setInit(M1);
   D.push_back(ID);
+
+  VarDecl *ND =
+      VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("ndim"), IntTy,
+                      AST.getTrivialTypeSourceInfo(IntTy), SC_Static);
+  ND->setInit(M1);
+  D.push_back(ND);
+
   Stmts.push_back(
-      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 2), SL, SL));
 
-  llvm::SmallVector<Expr *, 16> FuncArgs;
-  // Next we create the AST node for the function call nomp_jit().
-  // First argument to nomp_jit() is '&id'
-  DeclRefExpr *DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, ID,
-                                         false, SL, ID->getType(), VK_LValue);
-  FuncArgs.push_back(UnaryOperator::Create(
-      AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
-      OK_Ordinary, SL, false, FPOptionsOverride()));
+  // Now let's create the decl for `size_t gz[3], lz[3];` which are also passed
+  // as output argument to nomp_jit().
+  QualType ArrayTy = AST.getConstantArrayType(
+      AST.getSizeType(), llvm::APInt(32, 3), nullptr, ArrayType::Normal, 0);
+  VarDecl *GZ =
+      VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("gz"), ArrayTy,
+                      AST.getTrivialTypeSourceInfo(ArrayTy), SC_Static);
+  D.clear();
+  D.push_back(GZ);
+  VarDecl *LZ =
+      VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("lz"), ArrayTy,
+                      AST.getTrivialTypeSourceInfo(ArrayTy), SC_Static);
+  D.push_back(LZ);
+  Stmts.push_back(
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 2), SL, SL));
 
-  // Second argument to nomp_jit() is the kernel string (or the for loop)
-  SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
-  SourceManager &SM = getPreprocessor().getSourceManager();
-  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
-  llvm::StringRef bfr = SM.getBufferData(SM.getFileID(BL));
-  unsigned n = e;
-  for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
-    ;
+  // Next we create the AST node for the function call nomp_jit(). To do that
+  // we create the func args to nomp_jit().
+  CreateNompJitCall(Stmts, AST, getPreprocessor().getSourceManager(), ID, ND,
+                    GZ, LZ, FS);
 
-  const char *ptr = bfr.data();
-  llvm::StringRef knl(&ptr[s], n - s + 2);
-  QualType StrTy =
-      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, knl.size() + 1),
-                               nullptr, ArrayType::Normal, 0);
-  StringLiteral *KSL = StringLiteral::Create(AST, knl, StringLiteral::Ordinary,
-                                             false, StrTy, SL);
-  ImplicitCastExpr *ICE =
-      ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
-                               KSL, nullptr, VK_PRValue, FPOptionsOverride());
-  FuncArgs.push_back(ICE);
-  Stmts.push_back(CreateCallExpr(AST, SL, ArrayRef<Expr *>(FuncArgs),
-                                 LibNompFuncs[NompJit]));
-
-  // TODO: Create AST node for nomp_for
+  // Next we create AST node for nomp_for().
 
   return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), FPOptionsOverride(),
                               SL, SL);
