@@ -13,6 +13,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
+#include "clang/AST/StmtVisitor.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/Token.h"
 #include "clang/Parse/ParseDiagnostic.h"
@@ -314,10 +315,94 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
                               FPOptionsOverride(), SL, EL);
 }
 
+namespace {
+class ExternalVarRefFinder final : public StmtVisitor<ExternalVarRefFinder> {
+  std::set<VarDecl *> VD_, DRE_;
+
+public:
+  ExternalVarRefFinder() {}
+
+  void VisitCompoundStmt(CompoundStmt *S) {
+    for (auto *B : S->body())
+      Visit(B);
+  }
+
+  void VisitForStmt(ForStmt *S) {
+    if (S->getInit())
+      Visit(S->getInit());
+    if (S->getCond())
+      Visit(S->getCond());
+    if (S->getInc())
+      Visit(S->getInc());
+    Visit(S->getBody());
+  }
+
+  void VisitDeclStmt(DeclStmt *S) {
+    for (auto D : S->decls())
+      VisitDecl(D);
+  }
+
+  void VisitDecl(Decl *D) {
+    if (auto *VD = dyn_cast<VarDecl>(D)) {
+      VD_.insert(VD->getCanonicalDecl());
+      if (VD->hasInit())
+        Visit(VD->getInit());
+    }
+  }
+
+  void VisitBinaryOperator(BinaryOperator *O) {
+    Visit(O->getLHS());
+    Visit(O->getRHS());
+  }
+
+  void VisitArraySubscriptExpr(ArraySubscriptExpr *E) {
+    Visit(E->getLHS());
+    Visit(E->getRHS());
+  }
+
+  void VisitImplicitCastExpr(ImplicitCastExpr *E) { Visit(E->getSubExpr()); }
+
+  void VisitDeclRefExpr(DeclRefExpr *DRE) {
+    if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
+      DRE_.insert(VD->getCanonicalDecl());
+  }
+
+  void GetExternalVarDecls(std::set<VarDecl *> &VDS) {
+    std::set_difference(DRE_.begin(), DRE_.end(), VD_.begin(), VD_.end(),
+                        std::inserter(VDS, VDS.begin()));
+  }
+};
+} // namespace
+
+static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
+                           const SourceManager &SM,
+                           const clang::LangOptions &Opts, ForStmt *FS) {
+  // Find the External VarDecls in the for loop
+  ExternalVarRefFinder EVRF;
+  EVRF.VisitForStmt(FS);
+  EVRF.GetExternalVarDecls(EV);
+
+  clang::PrintingPolicy Policy(Opts);
+  llvm::raw_string_ostream OS(Knl);
+  for (auto V : EV) {
+    V->print(OS, Policy, 0);
+    OS << ";\n";
+  }
+  std::cout << "Decls:\n" << Knl;
+
+  SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
+  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
+  llvm::StringRef bfr = SM.getBufferData(SM.getFileID(BL));
+  unsigned n = e;
+  for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
+    ;
+  const char *ptr = bfr.data();
+  Knl = Knl + std::string(ptr + s, n - s + 2);
+}
+
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
-                              ASTContext &AST, SourceManager &SM, VarDecl *ID,
-                              VarDecl *ND, VarDecl *GZ, VarDecl *LZ,
-                              ForStmt *FS) {
+                              ASTContext &AST, VarDecl *ID, VarDecl *ND,
+                              VarDecl *GZ, VarDecl *LZ, std::string &Knl) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
   // First argument to nomp_jit() is '&id' -- output argument which assigns an
@@ -353,19 +438,10 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                DRE, nullptr, VK_PRValue, FPOptionsOverride()));
 
   // Fourth argument to nomp_jit() is the kernel string (or the for loop)
-  SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
-  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
-  llvm::StringRef bfr = SM.getBufferData(SM.getFileID(BL));
-  unsigned n = e;
-  for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
-    ;
-
-  const char *ptr = bfr.data();
-  llvm::StringRef knl(&ptr[s], n - s + 2);
   QualType StrTy =
-      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, knl.size() + 1),
+      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, Knl.size() + 1),
                                nullptr, ArrayType::Normal, 0);
-  StringLiteral *KSL = StringLiteral::Create(AST, knl, StringLiteral::Ordinary,
+  StringLiteral *KSL = StringLiteral::Create(AST, Knl, StringLiteral::Ordinary,
                                              false, StrTy, SourceLocation());
   FuncArgs.push_back(
       ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
@@ -394,6 +470,10 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Parse the for statement
   ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
+  std::set<VarDecl *> EV;
+  std::string Knl;
+  ProcessForStmt(EV, Knl, getPreprocessor().getSourceManager(),
+                 AST.getLangOpts(), FS);
 
   // We are going to create all our statements (declarations, function calls)
   // into the following vector and then create a compound statement out of it.
@@ -441,8 +521,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, getPreprocessor().getSourceManager(), ID, ND,
-                    GZ, LZ, FS);
+  CreateNompJitCall(Stmts, AST, ID, ND, GZ, LZ, Knl);
 
   // Next we create AST node for nomp_for().
 
