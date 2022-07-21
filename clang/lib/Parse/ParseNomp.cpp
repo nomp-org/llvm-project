@@ -452,6 +452,58 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                  LibNompFuncs[NompJit]));
 }
 
+static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
+                              ASTContext &AST, VarDecl *ID, VarDecl *ND,
+                              VarDecl *GZ, VarDecl *LZ,
+                              std::set<VarDecl *> EV) {
+  llvm::SmallVector<Expr *, 16> FuncArgs;
+
+  // First argument to nomp_run() is 'id' -- output argument which assigns an
+  // unique id to each kernel.
+  DeclRefExpr *DRE =
+      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
+                          false, SourceLocation(), ID->getType(), VK_LValue);
+  FuncArgs.push_back(DRE);
+
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ND,
+                            false, SourceLocation(), ND->getType(), VK_LValue);
+  FuncArgs.push_back(DRE);
+
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), GZ,
+                            false, SourceLocation(), GZ->getType(), VK_PRValue);
+  FuncArgs.push_back(DRE);
+
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), LZ,
+                            false, SourceLocation(), LZ->getType(), VK_PRValue);
+  FuncArgs.push_back(DRE);
+
+  QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
+  IntTy.addConst();
+  clang::IntegerLiteral *NA = IntegerLiteral::Create(
+      AST, llvm::APInt(32, EV.size()), IntTy, SourceLocation());
+  FuncArgs.push_back(NA);
+
+  for (auto *V : EV) {
+    QualType QT = V->getType();
+    unsigned Ptr = QT.getTypePtr()->isPointerType();
+    FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, Ptr), IntTy,
+                                              SourceLocation()));
+    DeclRefExpr *DRE =
+        DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), V,
+                            false, SourceLocation(), QT, VK_PRValue);
+    if (!Ptr)
+      FuncArgs.push_back(UnaryOperator::Create(
+          AST, DRE, UO_AddrOf, AST.getPointerType(QT), VK_PRValue, OK_Ordinary,
+          SourceLocation(), false, FPOptionsOverride()));
+    else
+      FuncArgs.push_back(DRE);
+  }
+
+  Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
+                                 ArrayRef<Expr *>(FuncArgs),
+                                 LibNompFuncs[NompRun]));
+}
+
 StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
@@ -523,7 +575,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   // we create the func args to nomp_jit().
   CreateNompJitCall(Stmts, AST, ID, ND, GZ, LZ, Knl);
 
-  // Next we create AST node for nomp_for().
+  // Next we create AST node for nomp_run().
+  CreateNompRunCall(Stmts, AST, ID, ND, GZ, LZ, EV);
 
   return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), FPOptionsOverride(),
                               SL, SL);
