@@ -47,11 +47,13 @@ enum Directive {
 
 enum UpdateDirection {
   UpdateInvalid = -1,
-  UpdateAlloc = 1,
-  UpdateTo = 2,
-  UpdateFrom = 4,
-  UpdateFree = 8
+  UpdateAlloc = 0,
+  UpdateTo = 1,
+  UpdateFrom = 2,
+  UpdateFree = 3
 };
+
+enum ArgType { TypeInteger = 1, TypeFloat = 2, TypePointer = 4 };
 
 //==============================================================================
 // Helper functions: String to Nomp types conversion
@@ -294,7 +296,6 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
     // Update direction
     QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
-    IntTy.addConst();
     FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, dirn), IntTy,
                                               SourceLocation()));
 
@@ -374,21 +375,27 @@ public:
 };
 } // namespace
 
-static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
-                           const SourceManager &SM,
-                           const clang::LangOptions &Opts, ForStmt *FS) {
+static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &KNL,
+                           std::string &KArgs, const std::string &KName,
+                           ForStmt *FS, const SourceManager &SM,
+                           const clang::LangOptions &Opts) {
   // Find the External VarDecls in the for loop
   ExternalVarRefFinder EVRF;
   EVRF.VisitForStmt(FS);
   EVRF.GetExternalVarDecls(EV);
 
   clang::PrintingPolicy Policy(Opts);
-  llvm::raw_string_ostream OS(Knl);
+  llvm::raw_string_ostream KS(KNL), KAS(KArgs);
+  KS << "void " << KName << "(";
+  unsigned int size = EV.size(), count = 0;
   for (auto V : EV) {
-    V->print(OS, Policy, 0);
-    OS << ";\n";
+    count++, V->print(KS, Policy, 0), KAS << V->getNameAsString();
+    if (count < size)
+      KS << ", ", KAS << ",";
+    else
+      KS << ")";
   }
-  std::cout << "Decls:\n" << Knl;
+  KS << " {\n";
 
   SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
   unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
@@ -397,12 +404,16 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
   for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
     ;
   const char *ptr = bfr.data();
-  Knl = Knl + std::string(ptr + s, n - s + 2);
+  KNL = KNL + std::string(ptr + s, n - s + 2);
+
+  KS << "}";
 }
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID, VarDecl *ND,
-                              VarDecl *GZ, VarDecl *LZ, std::string &Knl) {
+                              VarDecl *GZ, VarDecl *LZ, const std::string &KNL,
+                              const std::string &KArgs,
+                              const std::set<VarDecl *> &EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
   // First argument to nomp_jit() is '&id' -- output argument which assigns an
@@ -422,8 +433,8 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
       OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
 
-  // Third and fourth arguments are the launch parameters of the kernel: local
-  // and global size.
+  // Third and fourth arguments are the launch parameters of the kernel: global
+  // and local size.
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), GZ,
                             false, SourceLocation(), GZ->getType(), VK_PRValue);
   QualType ArrayTy = LZ->getType();
@@ -439,13 +450,57 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
   // Fourth argument to nomp_jit() is the kernel string (or the for loop)
   QualType StrTy =
-      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, Knl.size() + 1),
+      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, KNL.size() + 1),
                                nullptr, ArrayType::Normal, 0);
-  StringLiteral *KSL = StringLiteral::Create(AST, Knl, StringLiteral::Ordinary,
+  StringLiteral *KSL = StringLiteral::Create(AST, KNL, StringLiteral::Ordinary,
                                              false, StrTy, SourceLocation());
   FuncArgs.push_back(
       ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
                                KSL, nullptr, VK_PRValue, FPOptionsOverride()));
+
+  // Fifth argument to nomp_jit() is the number of external arguments.
+  QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
+  FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, EV.size()),
+                                            IntTy, SourceLocation()));
+
+  // Sixth argument to nomp_jit() is the kernel arg names in a comma separated
+  // string. We need this to evaluate the loop bounds
+  StringLiteral *KASL = StringLiteral::Create(
+      AST, KArgs, StringLiteral::Ordinary, false, StrTy, SourceLocation());
+  FuncArgs.push_back(
+      ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
+                               KASL, nullptr, VK_PRValue, FPOptionsOverride()));
+
+  for (auto V : EV) {
+    // We will either have {NOMP_SCALAR, sizeof(Type), DRE(Addr_Of())} or
+    // {NOMP_PTR, sizeof(Pointee Type), DRE()} based on if T is a pointer type
+    // or not.
+    QualType VT = V->getType();
+    const Type *T = VT.getTypePtrOrNull();
+    if (T) {
+      FuncArgs.push_back(IntegerLiteral::Create(
+          AST,
+          llvm::APInt(32, TypeInteger * T->isIntegerType() +
+                              TypeFloat * T->isFloatingType() +
+                              TypePointer * T->isPointerType()),
+          IntTy, SourceLocation()));
+
+      QualType TT = T->isPointerType() ? T->getPointeeType() : VT;
+      FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
+          UETT_SizeOf, AST.getTrivialTypeSourceInfo(TT), AST.getSizeType(),
+          SourceLocation(), SourceLocation()));
+
+      DeclRefExpr *DRE =
+          DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
+                              V, false, SourceLocation(), VT, VK_PRValue);
+      if (T->isPointerType())
+        FuncArgs.push_back(DRE);
+      else
+        FuncArgs.push_back(UnaryOperator::Create(
+            AST, DRE, UO_AddrOf, AST.getPointerType(VT), VK_PRValue,
+            OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
+    }
+  }
 
   Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
                                  ArrayRef<Expr *>(FuncArgs),
@@ -478,25 +533,35 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
   FuncArgs.push_back(DRE);
 
   QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
-  IntTy.addConst();
   clang::IntegerLiteral *NA = IntegerLiteral::Create(
       AST, llvm::APInt(32, EV.size()), IntTy, SourceLocation());
   FuncArgs.push_back(NA);
 
-  for (auto *V : EV) {
-    QualType QT = V->getType();
-    unsigned Ptr = QT.getTypePtr()->isPointerType();
-    FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, Ptr), IntTy,
-                                              SourceLocation()));
-    DeclRefExpr *DRE =
-        DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), V,
-                            false, SourceLocation(), QT, VK_PRValue);
-    if (!Ptr)
-      FuncArgs.push_back(UnaryOperator::Create(
-          AST, DRE, UO_AddrOf, AST.getPointerType(QT), VK_PRValue, OK_Ordinary,
-          SourceLocation(), false, FPOptionsOverride()));
-    else
-      FuncArgs.push_back(DRE);
+  for (auto V : EV) {
+    QualType VT = V->getType();
+    const Type *T = VT.getTypePtrOrNull();
+    if (T) {
+      FuncArgs.push_back(IntegerLiteral::Create(
+          AST,
+          llvm::APInt(32, TypeInteger * T->isIntegerType() +
+                              TypeFloat * T->isFloatingType() +
+                              TypePointer * T->isPointerType()),
+          IntTy, SourceLocation()));
+
+      DeclRefExpr *DRE =
+          DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
+                              V, false, SourceLocation(), VT, VK_PRValue);
+      if (T->isPointerType())
+        FuncArgs.push_back(DRE);
+      else {
+        FuncArgs.push_back(UnaryOperator::Create(
+            AST, DRE, UO_AddrOf, AST.getPointerType(VT), VK_PRValue,
+            OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
+        FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
+            UETT_SizeOf, AST.getTrivialTypeSourceInfo(VT), AST.getSizeType(),
+            SourceLocation(), SourceLocation()));
+      }
+    }
   }
 
   Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
@@ -521,11 +586,14 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   }
 
   // Parse the for statement
-  ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
   std::set<VarDecl *> EV;
-  std::string Knl;
-  ProcessForStmt(EV, Knl, getPreprocessor().getSourceManager(),
-                 AST.getLangOpts(), FS);
+  std::string KNL, KArgs;
+  // Kenel name is set to `loopy_kernel` for now -- user should be able to set
+  // this.
+  std::string KName = "loopy_kernel";
+  ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
+  ProcessForStmt(EV, KNL, KArgs, KName, FS,
+                 getPreprocessor().getSourceManager(), AST.getLangOpts());
 
   // We are going to create all our statements (declarations, function calls)
   // into the following vector and then create a compound statement out of it.
@@ -573,7 +641,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, ND, GZ, LZ, Knl);
+  CreateNompJitCall(Stmts, AST, ID, ND, GZ, LZ, KNL, KArgs, EV);
 
   // Next we create AST node for nomp_run().
   CreateNompRunCall(Stmts, AST, ID, ND, GZ, LZ, EV);
