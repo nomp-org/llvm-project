@@ -4814,6 +4814,15 @@ void BoUpSLP::buildTree_rec(ArrayRef<Value *> VL, unsigned Depth,
     return;
   }
 
+  // Don't go into catchswitch blocks, which can happen with PHIs.
+  // Such blocks can only have PHIs and the catchswitch.  There is no
+  // place to insert a shuffle if we need to, so just avoid that issue.
+  if (isa<CatchSwitchInst>(BB->getTerminator())) {
+    LLVM_DEBUG(dbgs() << "SLP: bundle in catchswitch block.\n");
+    newTreeEntry(VL, None /*not vectorized*/, S, UserTreeIdx);
+    return;
+  }
+
   // Check that every instruction appears once in this bundle.
   if (!TryToFindDuplicates(S))
     return;
@@ -5873,8 +5882,7 @@ InstructionCost BoUpSLP::getEntryCost(const TreeEntry *E,
           continue;
         }
       }
-      Cost -= TTIRef.getVectorInstrCost(Instruction::ExtractElement,
-                                        EE->getVectorOperandType(), Idx);
+      Cost -= TTIRef.getVectorInstrCost(EE, EE->getVectorOperandType(), Idx);
     }
     // Add a cost for subvector extracts/inserts if required.
     for (const auto &Data : ExtractVectorsTys) {
@@ -6107,9 +6115,8 @@ InstructionCost BoUpSLP::getEntryCost(const TreeEntry *E,
         for (unsigned I : E->ReuseShuffleIndices) {
           if (ShuffleOrOp == Instruction::ExtractElement) {
             auto *EE = cast<ExtractElementInst>(VL[I]);
-            CommonCost -= TTI->getVectorInstrCost(Instruction::ExtractElement,
-                                                  EE->getVectorOperandType(),
-                                                  *getExtractIndex(EE));
+            CommonCost -= TTI->getVectorInstrCost(
+                EE, EE->getVectorOperandType(), *getExtractIndex(EE));
           } else {
             CommonCost -= TTI->getVectorInstrCost(Instruction::ExtractElement,
                                                   VecTy, Idx);
@@ -6120,9 +6127,8 @@ InstructionCost BoUpSLP::getEntryCost(const TreeEntry *E,
         for (Value *V : VL) {
           if (ShuffleOrOp == Instruction::ExtractElement) {
             auto *EE = cast<ExtractElementInst>(V);
-            CommonCost += TTI->getVectorInstrCost(Instruction::ExtractElement,
-                                                  EE->getVectorOperandType(),
-                                                  *getExtractIndex(EE));
+            CommonCost += TTI->getVectorInstrCost(
+                EE, EE->getVectorOperandType(), *getExtractIndex(EE));
           } else {
             --Idx;
             CommonCost += TTI->getVectorInstrCost(Instruction::ExtractElement,
@@ -10963,9 +10969,7 @@ public:
            It != E; ++It) {
         PossibleRedValsVect.emplace_back();
         auto RedValsVect = It->second.takeVector();
-        stable_sort(RedValsVect, [](const auto &P1, const auto &P2) {
-          return P1.second < P2.second;
-        });
+        stable_sort(RedValsVect, llvm::less_second());
         for (const std::pair<Value *, unsigned> &Data : RedValsVect)
           PossibleRedValsVect.back().append(Data.second, Data.first);
       }

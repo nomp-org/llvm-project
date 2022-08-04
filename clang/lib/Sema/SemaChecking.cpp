@@ -8473,6 +8473,9 @@ static void CheckFormatString(
     llvm::SmallBitVector &CheckedVarArgs, UncoveredArgHandler &UncoveredArg,
     bool IgnoreStringsWithoutSpecifiers);
 
+static const Expr *maybeConstEvalStringLiteral(ASTContext &Context,
+                                               const Expr *E);
+
 // Determine if an expression is a string literal or constant string.
 // If this function returns false on the arguments to a function expecting a
 // format string, we will usually need to emit a warning.
@@ -8713,7 +8716,11 @@ tryAgain:
         }
       }
     }
-
+    if (const Expr *SLE = maybeConstEvalStringLiteral(S.Context, E))
+      return checkFormatStringExpr(S, SLE, Args, APK, format_idx, firstDataArg,
+                                   Type, CallType, /*InFunctionCall*/ false,
+                                   CheckedVarArgs, UncoveredArg, Offset,
+                                   IgnoreStringsWithoutSpecifiers);
     return SLCT_NotALiteral;
   }
   case Stmt::ObjCMessageExprClass: {
@@ -8821,6 +8828,20 @@ tryAgain:
   default:
     return SLCT_NotALiteral;
   }
+}
+
+// If this expression can be evaluated at compile-time,
+// check if the result is a StringLiteral and return it
+// otherwise return nullptr
+static const Expr *maybeConstEvalStringLiteral(ASTContext &Context,
+                                               const Expr *E) {
+  Expr::EvalResult Result;
+  if (E->EvaluateAsRValue(Result, Context) && Result.Val.isLValue()) {
+    const auto *LVE = Result.Val.getLValueBase().dyn_cast<const Expr *>();
+    if (isa_and_nonnull<StringLiteral>(LVE))
+      return LVE;
+  }
+  return nullptr;
 }
 
 Sema::FormatStringType Sema::GetFormatStringType(const FormatAttr *Format) {
@@ -10236,7 +10257,7 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
         // We extract the name from the typedef because we don't want to show
         // the underlying type in the diagnostic.
         StringRef Name;
-        if (const TypedefType *TypedefTy = dyn_cast<TypedefType>(ExprTy))
+        if (const auto *TypedefTy = ExprTy->getAs<TypedefType>())
           Name = TypedefTy->getDecl()->getName();
         else
           Name = CastTyName;
@@ -15830,11 +15851,26 @@ void Sema::CheckCastAlign(Expr *Op, QualType T, SourceRange TRange) {
 /// We avoid emitting out-of-bounds access warnings for such arrays as they are
 /// commonly used to emulate flexible arrays in C89 code.
 static bool IsTailPaddedMemberArray(Sema &S, const llvm::APInt &Size,
-                                    const NamedDecl *ND) {
-  if (Size != 1 || !ND) return false;
+                                    const NamedDecl *ND,
+                                    unsigned StrictFlexArraysLevel) {
+  if (!ND)
+    return false;
+
+  if (StrictFlexArraysLevel >= 2 && Size != 0)
+    return false;
+
+  if (StrictFlexArraysLevel == 1 && Size.ule(1))
+    return false;
+
+  // FIXME: While the default -fstrict-flex-arrays=0 permits Size>1 trailing
+  // arrays to be treated as flexible-array-members, we still emit diagnostics
+  // as if they are not. Pending further discussion...
+  if (StrictFlexArraysLevel == 0 && Size != 1)
+    return false;
 
   const FieldDecl *FD = dyn_cast<FieldDecl>(ND);
-  if (!FD) return false;
+  if (!FD)
+    return false;
 
   // Don't consider sizes resulting from macro expansions or template argument
   // substitution to form C89 tail-padded arrays.
@@ -15843,7 +15879,7 @@ static bool IsTailPaddedMemberArray(Sema &S, const llvm::APInt &Size,
   while (TInfo) {
     TypeLoc TL = TInfo->getTypeLoc();
     // Look through typedefs.
-    if (TypedefTypeLoc TTL = TL.getAs<TypedefTypeLoc>()) {
+    if (TypedefTypeLoc TTL = TL.getAsAdjusted<TypedefTypeLoc>()) {
       const TypedefNameDecl *TDL = TTL.getTypedefNameDecl();
       TInfo = TDL->getTypeSourceInfo();
       continue;
@@ -15857,10 +15893,13 @@ static bool IsTailPaddedMemberArray(Sema &S, const llvm::APInt &Size,
   }
 
   const RecordDecl *RD = dyn_cast<RecordDecl>(FD->getDeclContext());
-  if (!RD) return false;
-  if (RD->isUnion()) return false;
+  if (!RD)
+    return false;
+  if (RD->isUnion())
+    return false;
   if (const CXXRecordDecl *CRD = dyn_cast<CXXRecordDecl>(RD)) {
-    if (!CRD->isStandardLayout()) return false;
+    if (!CRD->isStandardLayout())
+      return false;
   }
 
   // See if this is the last field decl in the record.
@@ -15988,9 +16027,14 @@ void Sema::CheckArrayAccess(const Expr *BaseExpr, const Expr *IndexExpr,
     // example). In this case we have no information about whether the array
     // access exceeds the array bounds. However we can still diagnose an array
     // access which precedes the array bounds.
+    //
+    // FIXME: this check should be redundant with the IsUnboundedArray check
+    // above.
     if (BaseType->isIncompleteType())
       return;
 
+    // FIXME: this check should belong to the IsTailPaddedMemberArray call
+    // below.
     llvm::APInt size = ArrayTy->getSize();
     if (!size.isStrictlyPositive())
       return;
@@ -16023,10 +16067,9 @@ void Sema::CheckArrayAccess(const Expr *BaseExpr, const Expr *IndexExpr,
     if (AllowOnePastEnd ? index.ule(size) : index.ult(size))
       return;
 
-    // Also don't warn for arrays of size 1 which are members of some
-    // structure. These are often used to approximate flexible arrays in C89
-    // code.
-    if (IsTailPaddedMemberArray(*this, size, ND))
+    // Also don't warn for Flexible Array Member emulation.
+    const unsigned StrictFlexArraysLevel = getLangOpts().StrictFlexArrays;
+    if (IsTailPaddedMemberArray(*this, size, ND, StrictFlexArraysLevel))
       return;
 
     // Suppress the warning if the subscript expression (as identified by the

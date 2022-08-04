@@ -15,6 +15,7 @@
 #include <__config>
 #include <__iterator/iterator_traits.h>
 #include <__utility/move.h>
+#include <type_traits>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -24,7 +25,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _AlgPolicy, class _Compare, class _RandomAccessIterator>
 _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_AFTER_CXX11
-void __sift_up(_RandomAccessIterator __first, _RandomAccessIterator __last, _Compare __comp,
+void __sift_up(_RandomAccessIterator __first, _RandomAccessIterator __last, _Compare&& __comp,
         typename iterator_traits<_RandomAccessIterator>::difference_type __len) {
   using value_type = typename iterator_traits<_RandomAccessIterator>::value_type;
 
@@ -59,6 +60,9 @@ void __push_heap(_RandomAccessIterator __first, _RandomAccessIterator __last, _C
 template <class _RandomAccessIterator, class _Compare>
 inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_AFTER_CXX17
 void push_heap(_RandomAccessIterator __first, _RandomAccessIterator __last, _Compare __comp) {
+  static_assert(std::is_copy_constructible<_RandomAccessIterator>::value, "Iterators must be copy constructible.");
+  static_assert(std::is_copy_assignable<_RandomAccessIterator>::value, "Iterators must be copy assignable.");
+
   std::__push_heap<_ClassicAlgPolicy>(std::move(__first), std::move(__last), __comp);
 }
 

@@ -18,6 +18,7 @@
 #include <__config>
 #include <__iterator/iterator_traits.h>
 #include <__utility/move.h>
+#include <type_traits>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -37,7 +38,7 @@ void __pop_heap(_RandomAccessIterator __first, _RandomAccessIterator __last, _Co
   using value_type = typename iterator_traits<_RandomAccessIterator>::value_type;
   if (__len > 1) {
     value_type __top = _IterOps<_AlgPolicy>::__iter_move(__first);  // create a hole at __first
-    _RandomAccessIterator __hole = std::__floyd_sift_down<_AlgPolicy, _CompRef>(__first, __comp_ref, __len);
+    _RandomAccessIterator __hole = std::__floyd_sift_down<_AlgPolicy>(__first, __comp_ref, __len);
     --__last;
 
     if (__hole == __last) {
@@ -46,7 +47,7 @@ void __pop_heap(_RandomAccessIterator __first, _RandomAccessIterator __last, _Co
       *__hole = _IterOps<_AlgPolicy>::__iter_move(__last);
       ++__hole;
       *__last = std::move(__top);
-      std::__sift_up<_AlgPolicy, _CompRef>(__first, __hole, __comp_ref, __hole - __first);
+      std::__sift_up<_AlgPolicy>(__first, __hole, __comp_ref, __hole - __first);
     }
   }
 }
@@ -54,6 +55,9 @@ void __pop_heap(_RandomAccessIterator __first, _RandomAccessIterator __last, _Co
 template <class _RandomAccessIterator, class _Compare>
 inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_AFTER_CXX17
 void pop_heap(_RandomAccessIterator __first, _RandomAccessIterator __last, _Compare __comp) {
+  static_assert(std::is_copy_constructible<_RandomAccessIterator>::value, "Iterators must be copy constructible.");
+  static_assert(std::is_copy_assignable<_RandomAccessIterator>::value, "Iterators must be copy assignable.");
+
   typename iterator_traits<_RandomAccessIterator>::difference_type __len = __last - __first;
   std::__pop_heap<_ClassicAlgPolicy>(std::move(__first), std::move(__last), __comp, __len);
 }

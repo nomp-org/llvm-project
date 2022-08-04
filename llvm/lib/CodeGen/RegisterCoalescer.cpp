@@ -1306,7 +1306,7 @@ bool RegisterCoalescer::reMaterializeTrivialDef(const CoalescerPair &CP,
   }
   if (!TII->isAsCheapAsAMove(*DefMI))
     return false;
-  if (!TII->isTriviallyReMaterializable(*DefMI, AA))
+  if (!TII->isTriviallyReMaterializable(*DefMI))
     return false;
   if (!definesFullReg(*DefMI, SrcReg))
     return false;
@@ -2103,6 +2103,7 @@ bool RegisterCoalescer::joinCopy(MachineInstr *CopyMI, bool &Again) {
       LLVM_DEBUG(dbgs() << "Shrink LaneUses (Lane " << PrintLaneMask(S.LaneMask)
                         << ")\n");
       LIS->shrinkToUses(S, LI.reg());
+      ShrinkMainRange = true;
     }
     LI.removeEmptySubRanges();
   }

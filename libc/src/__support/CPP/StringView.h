@@ -38,11 +38,11 @@ public:
   // size_type.
   static constexpr size_t npos = -1;
 
-  StringView() : Data(nullptr), Len(0) {}
+  constexpr StringView() : Data(nullptr), Len(0) {}
 
   // Assumes Str is a null-terminated string. The length of the string does
   // not include the terminating null character.
-  explicit StringView(const char *Str) : Data(Str), Len(0) {
+  explicit constexpr StringView(const char *Str) : Data(Str), Len(0) {
     if (Str == nullptr)
       return;
     for (const char *D = Data; *D != '\0'; ++D, ++Len)
@@ -51,20 +51,20 @@ public:
       Data = nullptr;
   }
 
-  explicit StringView(const char *Str, size_t N)
+  explicit constexpr StringView(const char *Str, size_t N)
       : Data(N ? Str : nullptr), Len(Str == nullptr ? 0 : N) {}
 
   // Ctor for raw literal.
   template <size_t N>
-  StringView(const char (&Str)[N]) : StringView(Str, N - 1) {}
+  constexpr StringView(const char (&Str)[N]) : StringView(Str, N - 1) {}
 
-  const char *data() const { return Data; }
+  constexpr const char *data() const { return Data; }
 
   // Returns the size of the StringView.
-  size_t size() const { return Len; }
+  constexpr size_t size() const { return Len; }
 
   // Returns whether the StringView is empty.
-  bool empty() const { return Len == 0; }
+  constexpr bool empty() const { return Len == 0; }
 
   // Returns an iterator to the first character of the view.
   const char *begin() const { return Data; }
@@ -76,7 +76,7 @@ public:
   // Returns a const reference to the character at specified location pos.
   // No bounds checking is performed: the behavior is undefined if pos >=
   // size().
-  const char &operator[](size_t Index) const { return Data[Index]; }
+  constexpr const char &operator[](size_t Index) const { return Data[Index]; }
 
   /// compare - Compare two strings; the result is -1, 0, or 1 if this string
   /// is lexicographically less than, equal to, or greater than the \p Other.
@@ -107,19 +107,14 @@ public:
 
   // Moves the start of the view forward by n characters.
   // The behavior is undefined if n > size().
-  StringView remove_prefix(size_t N) const {
-    if (N >= Len)
-      return StringView();
-    return StringView(Data + N, Len - N);
+  void remove_prefix(size_t N) {
+    Len -= N;
+    Data += N;
   }
 
   // Moves the end of the view back by n characters.
   // The behavior is undefined if n > size().
-  StringView remove_suffix(size_t N) const {
-    if (N >= Len)
-      return StringView();
-    return StringView(Data, Len - N);
-  }
+  void remove_suffix(size_t N) { Len -= N; }
 
   // An equivalent method is not available in std::string_view.
   StringView trim(const char C) const {
@@ -177,6 +172,20 @@ public:
       if (S.front() == c)
         return size() - S.size();
       S = S.drop_front();
+    }
+    return npos;
+  }
+
+  // Search for the last character matching the character
+  //
+  // Return the index of the last character equal to the |c| before End.
+  size_t find_last_of(const char c, size_t End = npos) const {
+    End = End > size() ? size() : End + 1;
+    StringView S = drop_back(size() - End);
+    while (!S.empty()) {
+      if (S.back() == c)
+        return S.size() - 1;
+      S = S.drop_back();
     }
     return npos;
   }

@@ -560,6 +560,12 @@ DecodeStatus AMDGPUDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
     if (Bytes.size() < 4) break;
     const uint64_t QW = ((uint64_t)eatBytes<uint32_t>(Bytes) << 32) | DW;
 
+    if (STI.getFeatureBits()[AMDGPU::FeatureGFX940Insts]) {
+      Res = tryDecodeInst(DecoderTableGFX94064, MI, QW, Address);
+      if (Res)
+        break;
+    }
+
     if (STI.getFeatureBits()[AMDGPU::FeatureGFX90AInsts]) {
       Res = tryDecodeInst(DecoderTableGFX90A64, MI, QW, Address);
       if (Res)
@@ -2039,6 +2045,9 @@ AMDGPUDisassembler::decodeKernelDescriptorDirective(
       PRINT_DIRECTIVE(".amdhsa_wavefront_size32",
                       KERNEL_CODE_PROPERTY_ENABLE_WAVEFRONT_SIZE32);
     }
+
+    PRINT_DIRECTIVE(".amdhsa_uses_dynamic_stack",
+                    KERNEL_CODE_PROPERTY_USES_DYNAMIC_STACK);
 
     if (TwoByteBuffer & KERNEL_CODE_PROPERTY_RESERVED1)
       return MCDisassembler::Fail;

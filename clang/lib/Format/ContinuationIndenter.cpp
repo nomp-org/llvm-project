@@ -656,6 +656,7 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
   int PPColumnCorrection = 0;
   if (Style.IndentPPDirectives == FormatStyle::PPDIS_AfterHash &&
       Previous.is(tok::hash) && State.FirstIndent > 0 &&
+      &Previous == State.Line->First &&
       (State.Line->Type == LT_PreprocessorDirective ||
        State.Line->Type == LT_ImportStatement)) {
     Spaces += State.FirstIndent;
@@ -1089,8 +1090,12 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
                     CurrentState.Indent + Style.ContinuationIndentWidth);
   }
 
-  if (Style.BreakBeforeBraces == FormatStyle::BS_Whitesmiths &&
-      State.Line->First->is(tok::kw_enum)) {
+  // After a goto label. Usually labels are on separate lines. However
+  // for Verilog the labels may be only recognized by the annotator and
+  // thus are on the same line as the current token.
+  if ((Style.isVerilog() && Keywords.isVerilogEndOfLabel(Previous)) ||
+      (Style.BreakBeforeBraces == FormatStyle::BS_Whitesmiths &&
+       State.Line->First->is(tok::kw_enum))) {
     return (Style.IndentWidth * State.Line->First->IndentLevel) +
            Style.IndentWidth;
   }
@@ -1190,6 +1195,10 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
       break;
     }
   }
+  if (NextNonComment->isOneOf(TT_CtorInitializerColon, TT_InheritanceColon,
+                              TT_InheritanceComma)) {
+    return State.FirstIndent + Style.ConstructorInitializerIndentWidth;
+  }
   if ((PreviousNonComment &&
        (PreviousNonComment->ClosesTemplateDeclaration ||
         PreviousNonComment->ClosesRequiresClause ||
@@ -1263,10 +1272,6 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (PreviousNonComment && PreviousNonComment->is(TT_InheritanceColon) &&
       Style.BreakInheritanceList == FormatStyle::BILS_AfterColon) {
     return CurrentState.Indent;
-  }
-  if (NextNonComment->isOneOf(TT_CtorInitializerColon, TT_InheritanceColon,
-                              TT_InheritanceComma)) {
-    return State.FirstIndent + Style.ConstructorInitializerIndentWidth;
   }
   if (Previous.is(tok::r_paren) && !Current.isBinaryOperator() &&
       !Current.isOneOf(tok::colon, tok::comment)) {

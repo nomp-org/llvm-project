@@ -36,7 +36,7 @@ define void @arm_mult_q15(i16* %pSrcA, i16* %pSrcB, i16 * noalias %pDst, i32 %bl
 ; CHECK-NEXT:    [[TMP3:%.*]] = sext <8 x i16> [[WIDE_LOAD16]] to <8 x i32>
 ; CHECK-NEXT:    [[TMP4:%.*]] = mul nsw <8 x i32> [[TMP3]], [[TMP1]]
 ; CHECK-NEXT:    [[TMP5:%.*]] = ashr <8 x i32> [[TMP4]], <i32 15, i32 15, i32 15, i32 15, i32 15, i32 15, i32 15, i32 15>
-; CHECK-NEXT:    [[TMP6:%.*]] = call <8 x i32> @llvm.smin.v8i32(<8 x i32> [[TMP5]], <8 x i32> <i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767>)
+; CHECK-NEXT:    [[TMP6:%.*]] = tail call <8 x i32> @llvm.smin.v8i32(<8 x i32> [[TMP5]], <8 x i32> <i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767, i32 32767>)
 ; CHECK-NEXT:    [[TMP7:%.*]] = trunc <8 x i32> [[TMP6]] to <8 x i16>
 ; CHECK-NEXT:    [[TMP8:%.*]] = bitcast i16* [[NEXT_GEP14]] to <8 x i16>*
 ; CHECK-NEXT:    store <8 x i16> [[TMP7]], <8 x i16>* [[TMP8]], align 2
@@ -65,7 +65,7 @@ define void @arm_mult_q15(i16* %pSrcA, i16* %pSrcB, i16 * noalias %pDst, i32 %bl
 ; CHECK-NEXT:    [[CONV2:%.*]] = sext i16 [[TMP11]] to i32
 ; CHECK-NEXT:    [[MUL:%.*]] = mul nsw i32 [[CONV2]], [[CONV]]
 ; CHECK-NEXT:    [[SHR:%.*]] = ashr i32 [[MUL]], 15
-; CHECK-NEXT:    [[TMP12:%.*]] = tail call i32 @llvm.smin.i32(i32 [[SHR]], i32 32767) #[[ATTR2:[0-9]+]]
+; CHECK-NEXT:    [[TMP12:%.*]] = tail call i32 @llvm.smin.i32(i32 [[SHR]], i32 32767)
 ; CHECK-NEXT:    [[CONV3:%.*]] = trunc i32 [[TMP12]] to i16
 ; CHECK-NEXT:    [[INCDEC_PTR4]] = getelementptr inbounds i16, i16* [[PDST_ADDR_05]], i32 1
 ; CHECK-NEXT:    store i16 [[CONV3]], i16* [[PDST_ADDR_05]], align 2

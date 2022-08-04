@@ -173,6 +173,7 @@ public:
   InstructionCost getCFInstrCost(unsigned Opcode, TTI::TargetCostKind CostKind,
                                  const Instruction *I = nullptr);
 
+  using BaseT::getVectorInstrCost;
   InstructionCost getVectorInstrCost(unsigned Opcode, Type *Val,
                                      unsigned Index);
 
@@ -340,12 +341,23 @@ public:
     return PredicationStyle::None;
   }
 
+  bool preferPredicateOverEpilogue(Loop *L, LoopInfo *LI, ScalarEvolution &SE,
+                                   AssumptionCache &AC, TargetLibraryInfo *TLI,
+                                   DominatorTree *DT,
+                                   LoopVectorizationLegality *LVL,
+                                   InterleavedAccessInfo *IAI);
+
   bool supportsScalableVectors() const { return ST->hasSVE(); }
 
   bool enableScalableVectorization() const { return ST->hasSVE(); }
 
   bool isLegalToVectorizeReduction(const RecurrenceDescriptor &RdxDesc,
                                    ElementCount VF) const;
+
+  bool preferPredicatedReductionSelect(unsigned Opcode, Type *Ty,
+                                       TTI::ReductionFlags Flags) const {
+    return ST->hasSVE();
+  }
 
   InstructionCost getArithmeticReductionCost(unsigned Opcode, VectorType *Ty,
                                              Optional<FastMathFlags> FMF,

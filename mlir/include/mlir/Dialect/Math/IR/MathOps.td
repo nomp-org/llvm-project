@@ -110,6 +110,7 @@ def Math_AtanOp : Math_FloatUnaryOp<"atan">{
     %a = math.atan %b : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -363,6 +364,7 @@ def Math_ExpOp : Math_FloatUnaryOp<"exp"> {
     %a = math.exp %b : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -390,6 +392,7 @@ def Math_Exp2Op : Math_FloatUnaryOp<"exp2"> {
     %a = math.exp2 %b : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -418,6 +421,7 @@ def Math_ExpM1Op : Math_FloatUnaryOp<"expm1"> {
     %a = math.expm1 %b : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -496,6 +500,7 @@ def Math_LogOp : Math_FloatUnaryOp<"log"> {
     %y = math.log %x : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -541,6 +546,7 @@ def Math_Log1pOp : Math_FloatUnaryOp<"log1p"> {
     %y = math.log1p %x : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -651,6 +657,7 @@ def Math_TanOp : Math_FloatUnaryOp<"tan"> {
     %a = math.tan %b : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -671,6 +678,7 @@ def Math_TanhOp : Math_FloatUnaryOp<"tanh"> {
     %a = math.tanh %b : f64
     ```
   }];
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//

@@ -378,11 +378,6 @@ static bool canUseDirectConversion(
       if (alreadyCompressed)
         return false; // Dense after Compressed not yet supported.
       break;
-    case SparseTensorEncodingAttr::DimLevelType::Singleton:
-      // Although Singleton isn't generally supported yet, the direct
-      // conversion method doesn't have any particular problems with
-      // singleton after compressed.
-      break;
     }
   }
   return true;
@@ -868,13 +863,17 @@ private:
   SparseTensorConversionOptions options;
 };
 
-/// Sparse conversion rule for the release operator.
-class SparseTensorReleaseConverter : public OpConversionPattern<ReleaseOp> {
+/// Sparse conversion rule for the dealloc operator.
+class SparseTensorDeallocConverter
+    : public OpConversionPattern<bufferization::DeallocTensorOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
-  matchAndRewrite(ReleaseOp op, OpAdaptor adaptor,
+  matchAndRewrite(bufferization::DeallocTensorOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto enc = getSparseTensorEncoding(op.getTensor().getType());
+    if (!enc)
+      return failure();
     StringRef name = "delSparseTensor";
     TypeRange noTp;
     createFuncCall(rewriter, op, name, noTp, adaptor.getOperands(),
@@ -1100,7 +1099,7 @@ void mlir::populateSparseTensorConversionPatterns(
                SparseCastConverter, SparseTensorNewConverter,
                SparseReshapeConverter<tensor::ExpandShapeOp>,
                SparseReshapeConverter<tensor::CollapseShapeOp>,
-               SparseTensorAllocConverter, SparseTensorReleaseConverter,
+               SparseTensorAllocConverter, SparseTensorDeallocConverter,
                SparseTensorToPointersConverter, SparseTensorToIndicesConverter,
                SparseTensorToValuesConverter, SparseTensorLoadConverter,
                SparseTensorLexInsertConverter, SparseTensorExpandConverter,

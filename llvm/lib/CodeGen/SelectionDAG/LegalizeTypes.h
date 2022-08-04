@@ -404,6 +404,7 @@ private:
   SDValue PromoteIntOp_SET_ROUNDING(SDNode *N);
   SDValue PromoteIntOp_STACKMAP(SDNode *N, unsigned OpNo);
   SDValue PromoteIntOp_PATCHPOINT(SDNode *N, unsigned OpNo);
+  SDValue PromoteIntOp_VP_STRIDED(SDNode *N, unsigned OpNo);
 
   void PromoteSetCCOperands(SDValue &LHS,SDValue &RHS, ISD::CondCode Code);
 
@@ -497,6 +498,7 @@ private:
   SDValue ExpandIntOp_SPLAT_VECTOR(SDNode *N);
   SDValue ExpandIntOp_STACKMAP(SDNode *N, unsigned OpNo);
   SDValue ExpandIntOp_PATCHPOINT(SDNode *N, unsigned OpNo);
+  SDValue ExpandIntOp_VP_STRIDED(SDNode *N, unsigned OpNo);
 
   void IntegerExpandSetCCOperands(SDValue &NewLHS, SDValue &NewRHS,
                                   ISD::CondCode &CCCode, const SDLoc &dl);
@@ -945,6 +947,7 @@ private:
   SDValue WidenVecRes_INSERT_VECTOR_ELT(SDNode* N);
   SDValue WidenVecRes_LOAD(SDNode* N);
   SDValue WidenVecRes_VP_LOAD(VPLoadSDNode *N);
+  SDValue WidenVecRes_VP_STRIDED_LOAD(VPStridedLoadSDNode *N);
   SDValue WidenVecRes_MLOAD(MaskedLoadSDNode* N);
   SDValue WidenVecRes_MGATHER(MaskedGatherSDNode* N);
   SDValue WidenVecRes_VP_GATHER(VPGatherSDNode* N);
@@ -982,6 +985,7 @@ private:
   SDValue WidenVecOp_EXTRACT_SUBVECTOR(SDNode *N);
   SDValue WidenVecOp_STORE(SDNode* N);
   SDValue WidenVecOp_VP_STORE(SDNode *N, unsigned OpNo);
+  SDValue WidenVecOp_VP_STRIDED_STORE(SDNode *N, unsigned OpNo);
   SDValue WidenVecOp_MSTORE(SDNode* N, unsigned OpNo);
   SDValue WidenVecOp_MGATHER(SDNode* N, unsigned OpNo);
   SDValue WidenVecOp_MSCATTER(SDNode* N, unsigned OpNo);

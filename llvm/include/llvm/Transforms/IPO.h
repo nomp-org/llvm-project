@@ -21,8 +21,6 @@
 namespace llvm {
 
 struct InlineParams;
-class StringRef;
-class ModuleSummaryIndex;
 class ModulePass;
 class Pass;
 class BasicBlock;
@@ -96,10 +94,6 @@ ModulePass *createEliminateAvailableExternallyPass();
 ///
 ModulePass *createGVExtractionPass(std::vector<GlobalValue*>& GVs, bool
                                   deleteFn = false, bool keepConstInit = false);
-
-//===----------------------------------------------------------------------===//
-/// This pass performs iterative function importing from other modules.
-Pass *createFunctionImportPass();
 
 //===----------------------------------------------------------------------===//
 /// createFunctionInliningPass - Return a new pass object that uses a heuristic
@@ -241,20 +235,6 @@ enum class PassSummaryAction {
 
 /// This pass export CFI checks for use by external modules.
 ModulePass *createCrossDSOCFIPass();
-
-/// This pass implements whole-program devirtualization using type
-/// metadata.
-///
-/// The behavior depends on the summary arguments:
-/// - If ExportSummary is non-null, this pass will export type identifiers to
-///   the given summary.
-/// - Otherwise, if ImportSummary is non-null, this pass will import type
-///   identifiers from the given summary.
-/// - Otherwise it does neither.
-/// It is invalid for both ExportSummary and ImportSummary to be non-null.
-ModulePass *
-createWholeProgramDevirtPass(ModuleSummaryIndex *ExportSummary,
-                             const ModuleSummaryIndex *ImportSummary);
 
 /// This pass splits globals into pieces for the benefit of whole-program
 /// devirtualization and control-flow integrity.

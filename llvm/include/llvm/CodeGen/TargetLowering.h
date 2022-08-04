@@ -1960,7 +1960,8 @@ public:
 
   /// Perform a masked atomicrmw using a target-specific intrinsic. This
   /// represents the core LL/SC loop which will be lowered at a late stage by
-  /// the backend.
+  /// the backend. The target-specific intrinsic returns the loaded value and
+  /// is not responsible for masking and shifting the result.
   virtual Value *emitMaskedAtomicRMWIntrinsic(IRBuilderBase &Builder,
                                               AtomicRMWInst *AI,
                                               Value *AlignedAddr, Value *Incr,
@@ -1979,7 +1980,8 @@ public:
 
   /// Perform a masked cmpxchg using a target-specific intrinsic. This
   /// represents the core LL/SC loop which will be lowered at a late stage by
-  /// the backend.
+  /// the backend. The target-specific intrinsic returns the loaded value and
+  /// is not responsible for masking and shifting the result.
   virtual Value *emitMaskedAtomicCmpXchgIntrinsic(
       IRBuilderBase &Builder, AtomicCmpXchgInst *CI, Value *AlignedAddr,
       Value *CmpVal, Value *NewVal, Value *Mask, AtomicOrdering Ord) const {
@@ -3874,7 +3876,7 @@ public:
   virtual SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const;
 
   /// Return true if it is profitable to move this shift by a constant amount
-  /// though its operand, adjusting any immediate operands as necessary to
+  /// through its operand, adjusting any immediate operands as necessary to
   /// preserve semantics. This transformation may not be desirable if it
   /// disrupts a particularly auspicious target-specific tree (e.g. bitfield
   /// extraction in AArch64). By default, it returns true.
@@ -3883,6 +3885,14 @@ public:
   /// @param Level the current DAGCombine legalization level.
   virtual bool isDesirableToCommuteWithShift(const SDNode *N,
                                              CombineLevel Level) const {
+    return true;
+  }
+
+  /// Return true if it is profitable to combine an XOR of a logical shift
+  /// to create a logical shift of NOT. This transformation may not be desirable
+  /// if it disrupts a particularly auspicious target-specific tree (e.g.
+  /// BIC on ARM/AArch64). By default, it returns true.
+  virtual bool isDesirableToCommuteXorWithShift(const SDNode *N) const {
     return true;
   }
 

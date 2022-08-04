@@ -214,14 +214,26 @@ void DefGen::createParentWithTraits() {
   defCls.addParent(std::move(defParent));
 }
 
+/// Extra class definitions have a `$cppClass` substitution that is to be
+/// replaced by the C++ class name.
+static std::string formatExtraDefinitions(const AttrOrTypeDef &def) {
+  if (Optional<StringRef> extraDef = def.getExtraDefs()) {
+    FmtContext ctx = FmtContext().addSubst("cppClass", def.getCppClassName());
+    return tgfmt(*extraDef, &ctx).str();
+  }
+  return "";
+}
+
 void DefGen::emitTopLevelDeclarations() {
   // Inherit constructors from the attribute or type class.
   defCls.declare<VisibilityDeclaration>(Visibility::Public);
   defCls.declare<UsingDeclaration>("Base::Base");
 
   // Emit the extra declarations first in case there's a definition in there.
-  if (Optional<StringRef> extraDecl = def.getExtraDecls())
-    defCls.declare<ExtraClassDeclaration>(*extraDecl);
+  Optional<StringRef> extraDecl = def.getExtraDecls();
+  std::string extraDef = formatExtraDefinitions(def);
+  defCls.declare<ExtraClassDeclaration>(extraDecl ? *extraDecl : "",
+                                        std::move(extraDef));
 }
 
 void DefGen::emitBuilders() {
@@ -283,11 +295,7 @@ void DefGen::emitAccessors() {
     // class. Otherwise, let the user define the exact accessor definition.
     if (!def.genStorageClass())
       continue;
-    auto scope = m->body().indent().scope("return getImpl()->", ";");
-    if (isa<AttributeSelfTypeParameter>(param))
-      m->body() << formatv("getType().cast<{0}>()", param.getCppType());
-    else
-      m->body() << param.getName();
+    m->body().indent() << "return getImpl()->" << param.getName() << ";";
   }
 }
 
@@ -316,7 +324,8 @@ void DefGen::emitDefaultBuilder() {
       getBuilderParams({{"::mlir::MLIRContext *", "context"}}));
   MethodBody &body = m->body().indent();
   auto scope = body.scope("return Base::get(context", ");");
-  llvm::for_each(params, [&](auto &param) { body << ", " << param.getName(); });
+  for (const auto &param : params)
+    body << ", " << param.getName();
 }
 
 void DefGen::emitCheckedBuilder() {
@@ -327,7 +336,8 @@ void DefGen::emitCheckedBuilder() {
            {"::mlir::MLIRContext *", "context"}}));
   MethodBody &body = m->body().indent();
   auto scope = body.scope("return Base::getChecked(emitError, context", ");");
-  llvm::for_each(params, [&](auto &param) { body << ", " << param.getName(); });
+  for (const auto &param : params)
+    body << ", " << param.getName();
 }
 
 static SmallVector<MethodParameter>
@@ -436,37 +446,8 @@ void DefGen::emitTraitMethod(const InterfaceMethod &method) {
 void DefGen::emitStorageConstructor() {
   Constructor *ctor =
       storageCls->addConstructor<Method::Inline>(getBuilderParams({}));
-  if (auto *attrDef = dyn_cast<AttrDef>(&def)) {
-    // For attributes, a parameter marked with AttributeSelfTypeParameter is
-    // the type initializer that must be passed to the parent constructor.
-    const auto isSelfType = [](const AttrOrTypeParameter &param) {
-      return isa<AttributeSelfTypeParameter>(param);
-    };
-    auto *selfTypeParam = llvm::find_if(params, isSelfType);
-    if (std::count_if(selfTypeParam, params.end(), isSelfType) > 1) {
-      PrintFatalError(def.getLoc(),
-                      "Only one attribute parameter can be marked as "
-                      "AttributeSelfTypeParameter");
-    }
-    // Alternatively, if a type builder was specified, use that instead.
-    std::string attrStorageInit =
-        selfTypeParam == params.end() ? "" : selfTypeParam->getName().str();
-    if (attrDef->getTypeBuilder()) {
-      FmtContext ctx;
-      for (auto &param : params)
-        ctx.addSubst(strfmt("_{0}", param.getName()), param.getName());
-      attrStorageInit = tgfmt(*attrDef->getTypeBuilder(), &ctx);
-    }
-    ctor->addMemberInitializer("::mlir::AttributeStorage",
-                               std::move(attrStorageInit));
-    // Initialize members that aren't the attribute's type.
-    for (auto &param : params)
-      if (selfTypeParam == params.end() || *selfTypeParam != param)
-        ctor->addMemberInitializer(param.getName(), param.getName());
-  } else {
-    for (auto &param : params)
-      ctor->addMemberInitializer(param.getName(), param.getName());
-  }
+  for (auto &param : params)
+    ctor->addMemberInitializer(param.getName(), param.getName());
 }
 
 void DefGen::emitKeyType() {
@@ -484,9 +465,7 @@ void DefGen::emitEquals() {
   auto &body = eq->body().indent();
   auto scope = body.scope("return (", ");");
   const auto eachFn = [&](auto it) {
-    FmtContext ctx({{"_lhs", isa<AttributeSelfTypeParameter>(it.value())
-                                 ? "getType()"
-                                 : it.value().getName()},
+    FmtContext ctx({{"_lhs", it.value().getName()},
                     {"_rhs", strfmt("std::get<{0}>(tblgenKey)", it.index())}});
     body << tgfmt(it.value().getComparator(), &ctx);
   };
@@ -552,8 +531,7 @@ void DefGen::emitStorageClass() {
   // Emit the storage class members as public, at the very end of the struct.
   storageCls->finalize();
   for (auto &param : params)
-    if (!isa<AttributeSelfTypeParameter>(param))
-      storageCls->declare<Field>(param.getCppType(), param.getName());
+    storageCls->declare<Field>(param.getCppType(), param.getName());
 }
 
 //===----------------------------------------------------------------------===//

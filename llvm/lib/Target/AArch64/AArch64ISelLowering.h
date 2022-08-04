@@ -657,6 +657,9 @@ public:
   bool isDesirableToCommuteWithShift(const SDNode *N,
                                      CombineLevel Level) const override;
 
+  /// Returns false if N is a bit extraction pattern of (X >> C) & Mask.
+  bool isDesirableToCommuteXorWithShift(const SDNode *N) const override;
+
   /// Return true if it is profitable to fold a pair of shifts into a mask.
   bool shouldFoldConstantShiftPairToMask(const SDNode *N,
                                          CombineLevel Level) const override;
@@ -999,7 +1002,7 @@ private:
   SDValue LowerVectorSRA_SRL_SHL(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerShiftParts(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerVSETCC(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerCTPOP(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerCTPOP_PARITY(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerCTTZ(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerBitreverse(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerMinMax(SDValue Op, SelectionDAG &DAG) const;

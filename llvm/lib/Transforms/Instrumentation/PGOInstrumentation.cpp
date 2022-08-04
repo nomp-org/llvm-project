@@ -91,6 +91,7 @@
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/ProfDataUtils.h"
 #include "llvm/IR/ProfileSummary.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
@@ -840,8 +841,6 @@ static void instrumentOneFunc(
   auto CFGHash = ConstantInt::get(Type::getInt64Ty(M->getContext()),
                                   FuncInfo.FunctionHash);
   if (PGOFunctionEntryCoverage) {
-    assert(!IsCS &&
-           "entry coverge does not support context-sensitive instrumentation");
     auto &EntryBB = F.getEntryBlock();
     IRBuilder<> Builder(&EntryBB, EntryBB.getFirstInsertionPt());
     // llvm.instrprof.cover(i8* <name>, i64 <hash>, i32 <num-counters>,
@@ -1575,6 +1574,8 @@ static bool InstrumentAllFunctions(
       continue;
     if (F.hasFnAttribute(llvm::Attribute::NoProfile))
       continue;
+    if (F.hasFnAttribute(llvm::Attribute::SkipProfile))
+      continue;
     auto &TLI = LookupTLI(F);
     auto *BPI = LookupBPI(F);
     auto *BFI = LookupBFI(F);
@@ -2069,7 +2070,7 @@ template <> struct DOTGraphTraits<PGOUseFunc *> : DefaultDOTGraphTraits {
       // Display scaled counts for SELECT instruction:
       OS << "SELECT : { T = ";
       uint64_t TC, FC;
-      bool HasProf = I.extractProfMetadata(TC, FC);
+      bool HasProf = extractBranchWeights(I, TC, FC);
       if (!HasProf)
         OS << "Unknown, F = Unknown }\\l";
       else

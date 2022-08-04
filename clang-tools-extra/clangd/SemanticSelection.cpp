@@ -11,6 +11,9 @@
 #include "Protocol.h"
 #include "Selection.h"
 #include "SourceCode.h"
+#include "clang-pseudo/Bracket.h"
+#include "clang-pseudo/DirectiveTree.h"
+#include "clang-pseudo/Token.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
@@ -19,6 +22,7 @@
 #include "clang/Tooling/Syntax/TokenBufferTokenManager.h"
 #include "clang/Tooling/Syntax/Tree.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Error.h"
 #include <queue>
@@ -168,6 +172,79 @@ llvm::Expected<std::vector<FoldingRange>> getFoldingRanges(ParsedAST &AST) {
                                      AST.getSourceManager());
   const auto *SyntaxTree = syntax::buildSyntaxTree(A, TM, AST.getASTContext());
   return collectFoldingRanges(SyntaxTree, TM);
+}
+
+// FIXME( usaxena95): Collect PP conditional regions, includes and other code
+// regions (e.g. public/private/protected sections of classes, control flow
+// statement bodies).
+// Related issue: https://github.com/clangd/clangd/issues/310
+llvm::Expected<std::vector<FoldingRange>>
+getFoldingRanges(const std::string &Code) {
+  auto OrigStream = pseudo::lex(Code, clang::pseudo::genericLangOpts());
+
+  auto DirectiveStructure = pseudo::DirectiveTree::parse(OrigStream);
+  pseudo::chooseConditionalBranches(DirectiveStructure, OrigStream);
+
+  // FIXME: Provide ranges in the disabled-PP regions as well.
+  auto Preprocessed = DirectiveStructure.stripDirectives(OrigStream);
+
+  auto ParseableStream = cook(Preprocessed, clang::pseudo::genericLangOpts());
+  pseudo::pairBrackets(ParseableStream);
+
+  std::vector<FoldingRange> Result;
+  auto ToFoldingRange = [](Position Start, Position End,
+                           llvm::StringLiteral Kind) {
+    FoldingRange FR;
+    FR.startLine = Start.line;
+    FR.startCharacter = Start.character;
+    FR.endLine = End.line;
+    FR.endCharacter = End.character;
+    FR.kind = Kind.str();
+    return FR;
+  };
+  auto OriginalToken = [&](const pseudo::Token &T) {
+    return OrigStream.tokens()[T.OriginalIndex];
+  };
+  auto StartOffset = [&](const pseudo::Token &T) {
+    return OriginalToken(T).text().data() - Code.data();
+  };
+  auto StartPosition = [&](const pseudo::Token &T) {
+    return offsetToPosition(Code, StartOffset(T));
+  };
+  auto EndPosition = [&](const pseudo::Token &T) {
+    return offsetToPosition(Code, StartOffset(T) + OriginalToken(T).Length);
+  };
+  auto Tokens = ParseableStream.tokens();
+  // Brackets.
+  for (const auto &Tok : Tokens) {
+    if (auto *Paired = Tok.pair()) {
+      // Process only token at the start of the range. Avoid ranges on a single
+      // line.
+      if (Tok.Line < Paired->Line) {
+        Position Start = offsetToPosition(Code, 1 + StartOffset(Tok));
+        Position End = StartPosition(*Paired);
+        Result.push_back(ToFoldingRange(Start, End, FoldingRange::REGION_KIND));
+      }
+    }
+  }
+  // Multi-line comments.
+  for (const auto *T = Tokens.begin(); T != Tokens.end();) {
+    if (T->Kind != tok::comment) {
+      T++;
+      continue;
+    }
+    Position Start = StartPosition(*T);
+    Position LastCommentEnd = EndPosition(*T);
+    while (T != Tokens.end() && T->Kind == tok::comment &&
+           StartPosition(*T).line <= LastCommentEnd.line + 1) {
+      LastCommentEnd = EndPosition(*T);
+      T++;
+    }
+    if (Start.line < LastCommentEnd.line)
+      Result.push_back(
+          ToFoldingRange(Start, LastCommentEnd, FoldingRange::COMMENT_KIND));
+  }
+  return Result;
 }
 
 } // namespace clangd
