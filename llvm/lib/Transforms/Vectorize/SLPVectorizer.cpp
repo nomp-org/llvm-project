@@ -5882,7 +5882,7 @@ InstructionCost BoUpSLP::getEntryCost(const TreeEntry *E,
           continue;
         }
       }
-      Cost -= TTIRef.getVectorInstrCost(EE, EE->getVectorOperandType(), Idx);
+      Cost -= TTIRef.getVectorInstrCost(*EE, EE->getVectorOperandType(), Idx);
     }
     // Add a cost for subvector extracts/inserts if required.
     for (const auto &Data : ExtractVectorsTys) {
@@ -6116,7 +6116,7 @@ InstructionCost BoUpSLP::getEntryCost(const TreeEntry *E,
           if (ShuffleOrOp == Instruction::ExtractElement) {
             auto *EE = cast<ExtractElementInst>(VL[I]);
             CommonCost -= TTI->getVectorInstrCost(
-                EE, EE->getVectorOperandType(), *getExtractIndex(EE));
+                *EE, EE->getVectorOperandType(), *getExtractIndex(EE));
           } else {
             CommonCost -= TTI->getVectorInstrCost(Instruction::ExtractElement,
                                                   VecTy, Idx);
@@ -6128,7 +6128,7 @@ InstructionCost BoUpSLP::getEntryCost(const TreeEntry *E,
           if (ShuffleOrOp == Instruction::ExtractElement) {
             auto *EE = cast<ExtractElementInst>(V);
             CommonCost += TTI->getVectorInstrCost(
-                EE, EE->getVectorOperandType(), *getExtractIndex(EE));
+                *EE, EE->getVectorOperandType(), *getExtractIndex(EE));
           } else {
             --Idx;
             CommonCost += TTI->getVectorInstrCost(Instruction::ExtractElement,
@@ -7659,7 +7659,7 @@ public:
 
   /// Functions adds masks, merging them into  single one.
   void addMask(ArrayRef<unsigned> SubMask) {
-    SmallVector<int, 4> NewMask(SubMask.begin(), SubMask.end());
+    SmallVector<int, 4> NewMask(SubMask);
     addMask(NewMask);
   }
 
@@ -8755,7 +8755,7 @@ BoUpSLP::vectorizeTree(ExtraValueToDebugLocsMap &ExternallyUsedValues) {
       return PoisonValue::get(FixedVectorType::get(
           cast<VectorType>(V1->getType())->getElementType(), Mask.size()));
     Value *Op = V1;
-    SmallVector<int> CombinedMask(Mask.begin(), Mask.end());
+    SmallVector<int> CombinedMask(Mask);
     PeekThroughShuffles(Op, CombinedMask);
     if (!isa<FixedVectorType>(Op->getType()) ||
         !IsIdentityMask(CombinedMask, cast<FixedVectorType>(Op->getType()))) {
