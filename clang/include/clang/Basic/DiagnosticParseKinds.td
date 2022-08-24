@@ -1476,21 +1476,23 @@ def warn_omp_more_one_omp_all_memory : Warning<
 def warn_nomp_pragma_ignored : Warning<
   "unexpected '#pragma nomp ... ' in program">, InGroup<NompWarningsAndErrors>, DefaultIgnore;
 def err_nomp_lparen_expected: Error<
-  "Expected a '(' after the nomp directive '%0' at line %1 column %2">;
+  "Expected a '(' after nomp directive/clause '%0' at line %1 column %2">;
 def err_nomp_rparen_expected: Error<
-  "Expected a ')' after the nomp directive '%0' at line %1 column %2">;
+  "Expected a ')' after nomp directive/clause '%0' at line %1 column %2">;
 def err_nomp_lsquare_expected: Error<
-  "Expected a '[' after the nomp directive '%0' at line %1 column %2">;
+  "Expected a '[' after nomp directive/clause '%0' at line %1 column %2">;
 def err_nomp_rsquare_expected: Error<
-  "Expected a ']' after the nomp directive '%0' at line %1 column %2">;
+  "Expected a ']' after nomp directive/clause '%0' at line %1 column %2">;
 def err_nomp_comma_expected: Error<"Expected a ',' at line %0, column %1">;
 def err_nomp_colon_expected: Error<"Expected a ':' at line %0, column %1">;
 def err_nomp_integer_literal_expected: Error<
   "Expected an integer literal at line %0, column %1">;
+def err_nomp_string_literal_expected: Error<
+  "Expected a string literal at line %0, column %1">;
 def err_nomp_eod_expected: Error<
   "Expected the end of directive '%0' at line %1, column %2">;
 def err_nomp_identifier_expected: Error<
-  "Expected a variable name at line %1, column %2">;
+  "Expected a variable name at line %0, column %1">;
 def err_nomp_pointer_type_expected: Error<
   "Expected a pointer in the nomp directive '%0' at line %1, column %2">;
 def err_nomp_for_expected: Error<
@@ -1501,6 +1503,10 @@ def err_nomp_no_vardecl_found: Error<
   "Variable '%0' referenced at line %1, column %2 is not defined">;
 def err_nomp_invalid_update_direction: Error<
   "Invalid direction for nomp update at line %0, column %1">;
+def err_nomp_invalid_for_clause: Error<
+  "Invalid auxiliary for clause %0 at line %1, column %2">;
+def err_nomp_repeated_transform_clause: Error<
+  "Transform caluse is repeated at line %0, column %1">;
 def err_nomp_invalid_directive: Error<"Invalid nomp directive at line %0">;
 def err_nomp_invalid_number_of_args: Error<
   "Only %0 argument(s) given to nomp %1 which expects %2 arguments at line %3">;

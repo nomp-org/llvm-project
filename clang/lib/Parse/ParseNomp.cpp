@@ -53,6 +53,14 @@ enum UpdateDirection {
   UpdateFree = 3
 };
 
+enum ForClause {
+  ForClauseInvalid = -1,
+  ForClauseJit = 0,
+  ForClauseTransform = 1,
+  ForClauseAnnotate = 2
+};
+std::string ForClauses[3] = {"jit", "transform", "annotate"};
+
 enum ArgType { TypeInteger = 1, TypeFloat = 2, TypePointer = 4 };
 
 //==============================================================================
@@ -86,6 +94,14 @@ static inline UpdateDirection GetUpdateDirection(const llvm::StringRef dirn) {
       .Default(UpdateInvalid);
 }
 
+static inline ForClause GetForClause(const llvm::StringRef pragma) {
+  return llvm::StringSwitch<ForClause>(pragma)
+      .Case("jit", ForClauseJit)
+      .Case("transform", ForClauseTransform)
+      .Case("annotate", ForClauseAnnotate)
+      .Default(ForClauseInvalid);
+}
+
 static inline void NompHandleError(unsigned DiagID, Token &Tok, Parser &P,
                                    int LO = 0) {
   Preprocessor &PP = P.getPreprocessor();
@@ -106,6 +122,7 @@ static inline void NompHandleError3(unsigned DiagID, Token &Tok,
   PP.Diag(Tok, DiagID) << Arg << loc.getLineNumber() << loc.getColumnNumber();
   P.SkipUntil(tok::annot_pragma_nomp_end);
 }
+
 //==============================================================================
 // Helper functions: Tokens to Clang Stmt conversions
 //
@@ -233,9 +250,9 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
   // Direction should be one of the following: "to", "from", "alloc", "free".
   // So, if the token is not an identifier, it is an error.
-  if (Tok.isNot(tok::identifier))
-    NompHandleError(diag::err_nomp_identifier_expected, Tok, *this);
-  UpdateDirection dirn = GetUpdateDirection(Tok.getIdentifierInfo()->getName());
+  UpdateDirection dirn = UpdateInvalid;
+  if (Tok.is(tok::identifier))
+    dirn = GetUpdateDirection(Tok.getIdentifierInfo()->getName());
   if (dirn == UpdateInvalid) {
     NompHandleError(diag::err_nomp_invalid_update_direction, Tok, *this);
     return StmtEmpty();
@@ -412,12 +429,12 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &KNL,
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID, VarDecl *ND,
                               VarDecl *GZ, VarDecl *LZ, const std::string &KNL,
-                              const std::string &KArgs,
-                              const std::set<VarDecl *> &EV) {
+                              const std::string &KArgs, VarDecl *CLS,
+                              VarDecl *ANT, const std::set<VarDecl *> &EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
-  // First argument to nomp_jit() is '&id' -- output argument which assigns an
-  // unique id to each kernel.
+  // 1st argument is '&id' -- output argument which assigns an unique id to each
+  // kernel.
   DeclRefExpr *DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
                           false, SourceLocation(), ID->getType(), VK_LValue);
@@ -425,16 +442,16 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
       OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
 
-  // Second argument to nomp_jit() is '&ndim' -- output argument which sets
-  // the dimension of the kernel launch.
+  // 2nd argument is '&ndim' -- output argument which sets // the dimension of
+  // the kernel launch.
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ND,
                             false, SourceLocation(), ND->getType(), VK_LValue);
   FuncArgs.push_back(UnaryOperator::Create(
       AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
       OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
 
-  // Third and fourth arguments are the launch parameters of the kernel: global
-  // and local size.
+  // 3rd and 4th arguments are the launch parameters of the kernel: global and
+  // local size.
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), GZ,
                             false, SourceLocation(), GZ->getType(), VK_PRValue);
   QualType ArrayTy = LZ->getType();
@@ -448,7 +465,8 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       ImplicitCastExpr::Create(AST, ArrayTy, CastKind::CK_ArrayToPointerDecay,
                                DRE, nullptr, VK_PRValue, FPOptionsOverride()));
 
-  // Fourth argument to nomp_jit() is the kernel string (or the for loop)
+  // 5th argument is the kernel string (or the for loop) wrapped inside a
+  // function
   QualType StrTy =
       AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, KNL.size() + 1),
                                nullptr, ArrayType::Normal, 0);
@@ -458,13 +476,34 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
                                KSL, nullptr, VK_PRValue, FPOptionsOverride()));
 
-  // Fifth argument to nomp_jit() is the number of external arguments.
+  QualType StringArrayTy =
+      AST.getPointerType(AST.getPointerType(AST.getConstType(AST.CharTy)));
+  // 6th argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
+  // Currently, we support `transform` and `jit`
+  DRE =
+      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), CLS,
+                          false, SourceLocation(), CLS->getType(), VK_PRValue);
+  FuncArgs.push_back(ImplicitCastExpr::Create(
+      AST, StringArrayTy, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      VK_PRValue, FPOptionsOverride()));
+
+  // 7th argument is the user defined annotations.
+  DRE =
+      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ANT,
+                          false, SourceLocation(), ANT->getType(), VK_PRValue);
+  FuncArgs.push_back(ImplicitCastExpr::Create(
+      AST, StringArrayTy, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      VK_PRValue, FPOptionsOverride()));
+
+  // 8th argument is the number of external arguments.
   QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
   FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, EV.size()),
                                             IntTy, SourceLocation()));
 
-  // Sixth argument to nomp_jit() is the kernel arg names in a comma separated
-  // string. We need this to evaluate the loop bounds
+  // 9th and other arguments are the kernel arg names in a comma separated
+  // string. We need this to evaluate the loop bounds. Currently, we pass
+  // everything but only need scalar arguments (floats and ints), not the
+  // pointer arguments.
   StringLiteral *KASL = StringLiteral::Create(
       AST, KArgs, StringLiteral::Ordinary, false, StrTy, SourceLocation());
   FuncArgs.push_back(
@@ -573,6 +612,81 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
 
+  // Process auxiliary pragmas and annotations supported after `#pragma nomp
+  // for`. Mainly we want to support `annotate`, `tranform` and `jit` for the
+  // time being. All of the above should be parsed as an identifier token.
+  unsigned transformPresent = 0;
+  std::vector<std::string> clauses, annotations;
+  while (Tok.isNot(tok::annot_pragma_nomp_end)) {
+    ForClause clause = ForClauseInvalid;
+    if (Tok.is(tok::identifier))
+      clause = GetForClause(Tok.getIdentifierInfo()->getName());
+
+    // Should be a valid for clause -- otherwise print error and exit.
+    if (clause == ForClauseInvalid) {
+      NompHandleError3(diag::err_nomp_invalid_for_clause, Tok,
+                       Tok.getIdentifierInfo()->getName(), *this);
+      return StmtEmpty();
+    }
+
+    // `transform` can only be present once -- if there are two transform
+    // clauses, it is an error.
+    if (transformPresent && clause == ForClauseTransform) {
+      NompHandleError(diag::err_nomp_repeated_transform_clause, Tok, *this);
+      return StmtEmpty();
+    }
+
+    // Consume the clause and the following "(".
+    ConsumeToken();
+    if (!TryConsumeToken(tok::l_paren)) {
+      NompHandleError3(diag::err_nomp_lparen_expected, Tok, ForClauses[clause],
+                       *this);
+      return StmtEmpty();
+    }
+
+    // `jit` and `transform` both only take a single string literal as input.
+    // `annotate` takes key-value pairs. In any case, we should get a string
+    // literal next.
+    if (Tok.isNot(tok::string_literal)) {
+      NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
+      return StmtEmpty();
+    }
+
+    // Store the string literal and consume the token
+    std::string SL0 =
+        std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
+    ConsumeToken();
+
+    // If we are handling an `annotate` clause, we should expect one more string
+    // literal after a comma.
+    if (clause == ForClauseAnnotate) {
+      annotations.push_back(SL0);
+
+      if (!TryConsumeToken(tok::comma)) {
+        NompHandleError(diag::err_nomp_comma_expected, Tok, *this);
+        return StmtEmpty();
+      }
+      if (Tok.isNot(tok::string_literal)) {
+        NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
+        return StmtEmpty();
+      }
+
+      std::string SL1 =
+          std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
+      ConsumeToken();
+      annotations.push_back(SL1);
+    } else { // `jit` or `transform`
+      clauses.push_back(ForClauses[clause]);
+      clauses.push_back(SL0);
+    }
+
+    if (!TryConsumeToken(tok::r_paren)) {
+      NompHandleError3(diag::err_nomp_rparen_expected, Tok, ForClauses[clause],
+                       *this);
+      return StmtEmpty();
+    }
+  }
+
   if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
     NompHandleError3(diag::err_nomp_eod_expected, Tok, "for", *this);
     return StmtEmpty();
@@ -605,6 +719,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   // First, let's create the statement `static int id = -1, ndim = -1;` both of
   // which are passed as output arguments to nomp_jit()
   QualType IntTy = AST.getIntTypeForBitwidth(32, 1);
+
   VarDecl *ID =
       VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("id"), IntTy,
                       AST.getTrivialTypeSourceInfo(IntTy), SC_Static);
@@ -625,23 +740,78 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Now let's create the decl for `size_t gz[3], lz[3];` which are also passed
   // as output argument to nomp_jit().
-  QualType ArrayTy = AST.getConstantArrayType(
-      AST.getSizeType(), llvm::APInt(32, 3), nullptr, ArrayType::Normal, 0);
-  VarDecl *GZ =
-      VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("gz"), ArrayTy,
-                      AST.getTrivialTypeSourceInfo(ArrayTy), SC_Static);
   D.clear();
+  QualType SizeArrayTy = AST.getConstantArrayType(
+      AST.getSizeType(), llvm::APInt(32, 3), nullptr, ArrayType::Normal, 0);
+
+  VarDecl *GZ = VarDecl::Create(
+      AST, S.CurContext, SL, SL, &AST.Idents.get("gz"), SizeArrayTy,
+      AST.getTrivialTypeSourceInfo(SizeArrayTy), SC_Static);
   D.push_back(GZ);
-  VarDecl *LZ =
-      VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("lz"), ArrayTy,
-                      AST.getTrivialTypeSourceInfo(ArrayTy), SC_Static);
+
+  VarDecl *LZ = VarDecl::Create(
+      AST, S.CurContext, SL, SL, &AST.Idents.get("lz"), SizeArrayTy,
+      AST.getTrivialTypeSourceInfo(SizeArrayTy), SC_Static);
   D.push_back(LZ);
+
+  Stmts.push_back(
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 2), SL, SL));
+
+  // Next we create the decl for `const char *annotations[N] = {...} and
+  // const char *clauses[M] = {}.
+  D.clear();
+  QualType StringTy = AST.getPointerType(AST.getConstType(AST.CharTy));
+
+  QualType StringArrayTy1 = AST.getConstantArrayType(
+      StringTy, llvm::APInt(32, annotations.size() + 1), nullptr,
+      ArrayType::Normal, 0);
+  VarDecl *ANT = VarDecl::Create(
+      AST, S.CurContext, SL, SL, &AST.Idents.get("annotations"), StringArrayTy1,
+      AST.getTrivialTypeSourceInfo(StringArrayTy1), SC_Static);
+  llvm::SmallVector<Expr *, 16> InitList;
+  for (auto ant : annotations) {
+    StringLiteral *L = StringLiteral::Create(
+        AST, ant, StringLiteral::StringKind::Ordinary, false, StringTy, SL);
+    ImplicitCastExpr *ICE =
+        ImplicitCastExpr::Create(AST, StringTy, CK_ArrayToPointerDecay, L,
+                                 nullptr, VK_PRValue, FPOptionsOverride());
+    InitList.push_back(ICE);
+  }
+  IntegerLiteral *Zero =
+      IntegerLiteral::Create(AST, llvm::APInt(32, 0), IntTy, SL);
+  ImplicitCastExpr *ICEZ =
+      ImplicitCastExpr::Create(AST, IntTy, CK_NullToPointer, Zero, nullptr,
+                               VK_PRValue, FPOptionsOverride());
+  InitList.push_back(ICEZ);
+
+  ANT->setInit(new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL));
+  D.push_back(ANT);
+
+  QualType StringArrayTy2 =
+      AST.getConstantArrayType(StringTy, llvm::APInt(32, clauses.size() + 1),
+                               nullptr, ArrayType::Normal, 0);
+  VarDecl *CLS = VarDecl::Create(
+      AST, S.CurContext, SL, SL, &AST.Idents.get("clauses"), StringArrayTy2,
+      AST.getTrivialTypeSourceInfo(StringArrayTy2), SC_Static);
+  InitList.clear();
+  for (auto cls : clauses) {
+    StringLiteral *L = StringLiteral::Create(
+        AST, cls, StringLiteral::StringKind::Ordinary, false, StringTy, SL);
+    ImplicitCastExpr *ICE =
+        ImplicitCastExpr::Create(AST, StringTy, CK_ArrayToPointerDecay, L,
+                                 nullptr, VK_PRValue, FPOptionsOverride());
+    InitList.push_back(ICE);
+  }
+  InitList.push_back(ICEZ);
+  CLS->setInit(new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL));
+  D.push_back(CLS);
+
   Stmts.push_back(
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 2), SL, SL));
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, ND, GZ, LZ, KNL, KArgs, EV);
+  CreateNompJitCall(Stmts, AST, ID, ND, GZ, LZ, KNL, KArgs, CLS, ANT, EV);
 
   // Next we create AST node for nomp_run().
   CreateNompRunCall(Stmts, AST, ID, ND, GZ, LZ, EV);
