@@ -427,10 +427,10 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &KNL,
 }
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
-                              ASTContext &AST, VarDecl *ID, VarDecl *ND,
-                              VarDecl *GZ, VarDecl *LZ, const std::string &KNL,
-                              const std::string &KArgs, VarDecl *CLS,
-                              VarDecl *ANT, const std::set<VarDecl *> &EV) {
+                              ASTContext &AST, VarDecl *ID,
+                              const std::string &KNL, const std::string &KArgs,
+                              VarDecl *CLS, VarDecl *ANT,
+                              const std::set<VarDecl *> &EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
   // 1st argument is '&id' -- output argument which assigns an unique id to each
@@ -442,30 +442,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
       OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
 
-  // 2nd argument is '&ndim' -- output argument which sets // the dimension of
-  // the kernel launch.
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ND,
-                            false, SourceLocation(), ND->getType(), VK_LValue);
-  FuncArgs.push_back(UnaryOperator::Create(
-      AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
-      OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
-
-  // 3rd and 4th arguments are the launch parameters of the kernel: global and
-  // local size.
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), GZ,
-                            false, SourceLocation(), GZ->getType(), VK_PRValue);
-  QualType ArrayTy = LZ->getType();
-  FuncArgs.push_back(
-      ImplicitCastExpr::Create(AST, ArrayTy, CastKind::CK_ArrayToPointerDecay,
-                               DRE, nullptr, VK_PRValue, FPOptionsOverride()));
-
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), LZ,
-                            false, SourceLocation(), LZ->getType(), VK_PRValue);
-  FuncArgs.push_back(
-      ImplicitCastExpr::Create(AST, ArrayTy, CastKind::CK_ArrayToPointerDecay,
-                               DRE, nullptr, VK_PRValue, FPOptionsOverride()));
-
-  // 5th argument is the kernel string (or the for loop) wrapped inside a
+  // 2nd argument is the kernel string (or the for loop) wrapped inside a
   // function
   QualType StrTy =
       AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, KNL.size() + 1),
@@ -478,7 +455,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
   QualType StringArrayTy =
       AST.getPointerType(AST.getPointerType(AST.getConstType(AST.CharTy)));
-  // 6th argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
+  // 3rd argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
   // Currently, we support `transform` and `jit`
   DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), CLS,
@@ -487,7 +464,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       AST, StringArrayTy, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
-  // 7th argument is the user defined annotations.
+  // 4th argument is the user defined annotations.
   DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ANT,
                           false, SourceLocation(), ANT->getType(), VK_PRValue);
@@ -495,12 +472,12 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       AST, StringArrayTy, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
-  // 8th argument is the number of external arguments.
+  // 5th argument is the number of external arguments.
   QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
   FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, EV.size()),
                                             IntTy, SourceLocation()));
 
-  // 9th and other arguments are the kernel arg names in a comma separated
+  // 6th and other arguments are the kernel arg names in a comma separated
   // string. We need this to evaluate the loop bounds. Currently, we pass
   // everything but only need scalar arguments (floats and ints), not the
   // pointer arguments.
@@ -547,8 +524,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 }
 
 static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
-                              ASTContext &AST, VarDecl *ID, VarDecl *ND,
-                              VarDecl *GZ, VarDecl *LZ,
+                              ASTContext &AST, VarDecl *ID,
                               std::set<VarDecl *> EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
@@ -557,18 +533,6 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
   DeclRefExpr *DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
                           false, SourceLocation(), ID->getType(), VK_LValue);
-  FuncArgs.push_back(DRE);
-
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ND,
-                            false, SourceLocation(), ND->getType(), VK_LValue);
-  FuncArgs.push_back(DRE);
-
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), GZ,
-                            false, SourceLocation(), GZ->getType(), VK_PRValue);
-  FuncArgs.push_back(DRE);
-
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), LZ,
-                            false, SourceLocation(), LZ->getType(), VK_PRValue);
   FuncArgs.push_back(DRE);
 
   QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
@@ -729,33 +693,9 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   ID->setInit(M1);
   D.push_back(ID);
 
-  VarDecl *ND =
-      VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("ndim"), IntTy,
-                      AST.getTrivialTypeSourceInfo(IntTy), SC_Static);
-  ND->setInit(M1);
-  D.push_back(ND);
-
+  // FIXME: Remove the DeclGroupRef::Create
   Stmts.push_back(
-      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 2), SL, SL));
-
-  // Now let's create the decl for `size_t gz[3], lz[3];` which are also passed
-  // as output argument to nomp_jit().
-  D.clear();
-  QualType SizeArrayTy = AST.getConstantArrayType(
-      AST.getSizeType(), llvm::APInt(32, 3), nullptr, ArrayType::Normal, 0);
-
-  VarDecl *GZ = VarDecl::Create(
-      AST, S.CurContext, SL, SL, &AST.Idents.get("gz"), SizeArrayTy,
-      AST.getTrivialTypeSourceInfo(SizeArrayTy), SC_Static);
-  D.push_back(GZ);
-
-  VarDecl *LZ = VarDecl::Create(
-      AST, S.CurContext, SL, SL, &AST.Idents.get("lz"), SizeArrayTy,
-      AST.getTrivialTypeSourceInfo(SizeArrayTy), SC_Static);
-  D.push_back(LZ);
-
-  Stmts.push_back(
-      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 2), SL, SL));
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
   // Next we create the decl for `const char *annotations[N] = {...} and
   // const char *clauses[M] = {}.
@@ -811,10 +751,10 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, ND, GZ, LZ, KNL, KArgs, CLS, ANT, EV);
+  CreateNompJitCall(Stmts, AST, ID, KNL, KArgs, CLS, ANT, EV);
 
   // Next we create AST node for nomp_run().
-  CreateNompRunCall(Stmts, AST, ID, ND, GZ, LZ, EV);
+  CreateNompRunCall(Stmts, AST, ID, EV);
 
   return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), FPOptionsOverride(),
                               SL, SL);
