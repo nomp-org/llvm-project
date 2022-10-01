@@ -45,13 +45,17 @@ enum Directive {
   DirectiveFinalize = 3
 };
 
+// FIXME: Following two enums (UpdateDirection and ArgType) should be based
+// on `nomp.h` and sholdn't be hardcoded here.
 enum UpdateDirection {
   UpdateInvalid = -1,
-  UpdateAlloc = 0,
-  UpdateTo = 1,
-  UpdateFrom = 2,
-  UpdateFree = 3
+  UpdateAlloc = 1,
+  UpdateTo = 2,
+  UpdateFrom = 4,
+  UpdateFree = 8
 };
+
+enum ArgType { TypeInteger = 1, TypeFloat = 2, TypePointer = 4 };
 
 enum ForClause {
   ForClauseInvalid = -1,
@@ -60,8 +64,6 @@ enum ForClause {
   ForClauseAnnotate = 2
 };
 std::string ForClauses[3] = {"jit", "transform", "annotate"};
-
-enum ArgType { TypeInteger = 1, TypeFloat = 2, TypePointer = 4 };
 
 //==============================================================================
 // Helper functions: String to Nomp types conversion
@@ -392,7 +394,7 @@ public:
 };
 } // namespace
 
-static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &KNL,
+static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
                            std::string &KArgs, const std::string &KName,
                            ForStmt *FS, const SourceManager &SM,
                            const clang::LangOptions &Opts) {
@@ -402,15 +404,19 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &KNL,
   EVRF.GetExternalVarDecls(EV);
 
   clang::PrintingPolicy Policy(Opts);
-  llvm::raw_string_ostream KS(KNL), KAS(KArgs);
+  llvm::raw_string_ostream KS(Knl), KAS(KArgs);
   KS << "void " << KName << "(";
   unsigned int size = EV.size(), count = 0;
   for (auto V : EV) {
-    count++, V->print(KS, Policy, 0), KAS << V->getNameAsString();
-    if (count < size)
-      KS << ", ", KAS << ",";
-    else
+    V->print(KS, Policy, 0);
+    KAS << V->getNameAsString();
+    count++;
+    if (count < size) {
+      KS << ", ";
+      KAS << ", ";
+    } else {
       KS << ")";
+    }
   }
   KS << " {\n";
 
@@ -421,17 +427,17 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &KNL,
   for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
     ;
   const char *ptr = bfr.data();
-  KNL = KNL + std::string(ptr + s, n - s + 2);
+  Knl = Knl + std::string(ptr + s, n - s + 2);
 
   KS << "}";
 }
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
-                              ASTContext &AST, VarDecl *ID,
-                              const std::string &KNL, const std::string &KArgs,
-                              VarDecl *CLS, VarDecl *ANT,
+                              ASTContext &AST, VarDecl *ID, VarDecl *VKNL,
+                              VarDecl *VArgs, VarDecl *CLS, VarDecl *ANT,
                               const std::set<VarDecl *> &EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
+  SourceLocation SL = SourceLocation();
 
   // 1st argument is '&id' -- output argument which assigns an unique id to each
   // kernel.
@@ -440,53 +446,51 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                           false, SourceLocation(), ID->getType(), VK_LValue);
   FuncArgs.push_back(UnaryOperator::Create(
       AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
-      OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
+      OK_Ordinary, SL, false, FPOptionsOverride()));
+
+  QualType CharArrayTy1 = AST.getPointerType(AST.getConstType(AST.CharTy));
 
   // 2nd argument is the kernel string (or the for loop) wrapped inside a
-  // function
-  QualType StrTy =
-      AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, KNL.size() + 1),
-                               nullptr, ArrayType::Normal, 0);
-  StringLiteral *KSL = StringLiteral::Create(AST, KNL, StringLiteral::Ordinary,
-                                             false, StrTy, SourceLocation());
-  FuncArgs.push_back(
-      ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
-                               KSL, nullptr, VK_PRValue, FPOptionsOverride()));
-
-  QualType StringArrayTy =
-      AST.getPointerType(AST.getPointerType(AST.getConstType(AST.CharTy)));
-  // 3rd argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
-  // Currently, we support `transform` and `jit`
-  DRE =
-      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), CLS,
-                          false, SourceLocation(), CLS->getType(), VK_PRValue);
+  // function.
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VKNL, false, SL,
+                            VKNL->getType(), VK_LValue);
   FuncArgs.push_back(ImplicitCastExpr::Create(
-      AST, StringArrayTy, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      AST, CharArrayTy1, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
-  // 4th argument is the user defined annotations.
-  DRE =
-      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ANT,
-                          false, SourceLocation(), ANT->getType(), VK_PRValue);
+  QualType CharArrayTy2 = AST.getPointerType(CharArrayTy1);
+
+  // 3rd argument is the user defined annotations.
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, ANT, false, SL,
+                            ANT->getType(), VK_LValue);
   FuncArgs.push_back(ImplicitCastExpr::Create(
-      AST, StringArrayTy, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      AST, CharArrayTy2, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      VK_PRValue, FPOptionsOverride()));
+
+  // 4th argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
+  // Currently, we support `transform` and `jit`
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, CLS, false, SL,
+                            CLS->getType(), VK_LValue);
+  FuncArgs.push_back(ImplicitCastExpr::Create(
+      AST, CharArrayTy2, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
   // 5th argument is the number of external arguments.
   QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
-  FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, EV.size()),
-                                            IntTy, SourceLocation()));
+  FuncArgs.push_back(
+      IntegerLiteral::Create(AST, llvm::APInt(32, EV.size()), IntTy, SL));
 
   // 6th and other arguments are the kernel arg names in a comma separated
   // string. We need this to evaluate the loop bounds. Currently, we pass
   // everything but only need scalar arguments (floats and ints), not the
   // pointer arguments.
-  StringLiteral *KASL = StringLiteral::Create(
-      AST, KArgs, StringLiteral::Ordinary, false, StrTy, SourceLocation());
-  FuncArgs.push_back(
-      ImplicitCastExpr::Create(AST, StrTy, CastKind::CK_ArrayToPointerDecay,
-                               KASL, nullptr, VK_PRValue, FPOptionsOverride()));
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VArgs, false, SL,
+                            VArgs->getType(), VK_LValue);
+  FuncArgs.push_back(ImplicitCastExpr::Create(
+      AST, CharArrayTy1, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      VK_PRValue, FPOptionsOverride()));
 
+  // 7th and beyond ...
   for (auto V : EV) {
     // We will either have {NOMP_SCALAR, sizeof(Type), DRE(Addr_Of())} or
     // {NOMP_PTR, sizeof(Pointee Type), DRE()} based on if T is a pointer type
@@ -499,22 +503,23 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
           llvm::APInt(32, TypeInteger * T->isIntegerType() +
                               TypeFloat * T->isFloatingType() +
                               TypePointer * T->isPointerType()),
-          IntTy, SourceLocation()));
+          IntTy, SL));
 
       QualType TT = T->isPointerType() ? T->getPointeeType() : VT;
       FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
-          UETT_SizeOf, AST.getTrivialTypeSourceInfo(TT), AST.getSizeType(),
-          SourceLocation(), SourceLocation()));
+          UETT_SizeOf, AST.getTrivialTypeSourceInfo(TT), AST.getSizeType(), SL,
+          SL));
 
-      DeclRefExpr *DRE =
-          DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
-                              V, false, SourceLocation(), VT, VK_PRValue);
+      DeclRefExpr *DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL,
+                                             V, false, SL, VT, VK_LValue);
       if (T->isPointerType())
-        FuncArgs.push_back(DRE);
+        FuncArgs.push_back(ImplicitCastExpr::Create(AST, VT, CK_LValueToRValue,
+                                                    DRE, nullptr, VK_PRValue,
+                                                    FPOptionsOverride()));
       else
         FuncArgs.push_back(UnaryOperator::Create(
             AST, DRE, UO_AddrOf, AST.getPointerType(VT), VK_PRValue,
-            OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
+            OK_Ordinary, SL, false, FPOptionsOverride()));
     }
   }
 
@@ -533,13 +538,11 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
   DeclRefExpr *DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
                           false, SourceLocation(), ID->getType(), VK_LValue);
-  FuncArgs.push_back(DRE);
+  FuncArgs.push_back(ImplicitCastExpr::Create(AST, ID->getType(),
+                                              CK_LValueToRValue, DRE, nullptr,
+                                              VK_PRValue, FPOptionsOverride()));
 
   QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
-  clang::IntegerLiteral *NA = IntegerLiteral::Create(
-      AST, llvm::APInt(32, EV.size()), IntTy, SourceLocation());
-  FuncArgs.push_back(NA);
-
   for (auto V : EV) {
     QualType VT = V->getType();
     const Type *T = VT.getTypePtrOrNull();
@@ -553,9 +556,11 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
       DeclRefExpr *DRE =
           DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
-                              V, false, SourceLocation(), VT, VK_PRValue);
+                              V, false, SourceLocation(), VT, VK_LValue);
       if (T->isPointerType())
-        FuncArgs.push_back(DRE);
+        FuncArgs.push_back(ImplicitCastExpr::Create(AST, VT, CK_LValueToRValue,
+                                                    DRE, nullptr, VK_PRValue,
+                                                    FPOptionsOverride()));
       else {
         FuncArgs.push_back(UnaryOperator::Create(
             AST, DRE, UO_AddrOf, AST.getPointerType(VT), VK_PRValue,
@@ -665,85 +670,135 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Parse the for statement
   std::set<VarDecl *> EV;
-  std::string KNL, KArgs;
+  std::string Knl, KArgs;
+
   // Kenel name is set to `loopy_kernel` for now -- user should be able to set
   // this.
   std::string KName = "loopy_kernel";
   ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
-  ProcessForStmt(EV, KNL, KArgs, KName, FS,
+  ProcessForStmt(EV, Knl, KArgs, KName, FS,
                  getPreprocessor().getSourceManager(), AST.getLangOpts());
 
   // We are going to create all our statements (declarations, function calls)
   // into the following vector and then create a compound statement out of it.
   llvm::SmallVector<Stmt *, 16> Stmts;
-
-  // We will collect the DeclStmt in the following array.
+  // We will collect the DeclStmts in the following array.
   llvm::SmallVector<Decl *, 3> D;
 
-  // First, let's create the statement `static int id = -1, ndim = -1;` both of
-  // which are passed as output arguments to nomp_jit()
+  // First, let's create the statement `static int id = -1;`
   QualType IntTy = AST.getIntTypeForBitwidth(32, 1);
-
   VarDecl *ID =
       VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("id"), IntTy,
                       AST.getTrivialTypeSourceInfo(IntTy), SC_Static);
   UnaryOperator *M1 = UnaryOperator::Create(
       AST, IntegerLiteral::Create(AST, llvm::APInt(32, 1), IntTy, SL), UO_Minus,
-      IntTy, VK_LValue, OK_Ordinary, SL, false, FPOptionsOverride());
+      IntTy, VK_PRValue, OK_Ordinary, SL, false, FPOptionsOverride());
   ID->setInit(M1);
   D.push_back(ID);
-
   // FIXME: Remove the DeclGroupRef::Create
   Stmts.push_back(
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
-  // Next we create the decl for `const char *annotations[N] = {...} and
-  // const char *clauses[M] = {}.
-  D.clear();
-  QualType StringTy = AST.getPointerType(AST.getConstType(AST.CharTy));
+  QualType ConstCharTy = AST.getConstType(AST.CharTy);
+  QualType StringTy = AST.getPointerType(AST.CharTy);
+  QualType ConstStringTy = AST.getPointerType(ConstCharTy);
 
+  // We will create `const char *knl[K] = "..."` variable to hold the kernel
+  D.clear();
+  QualType KnlStrTy =
+      AST.getConstantArrayType(ConstCharTy, llvm::APInt(32, Knl.size() + 1),
+                               nullptr, ArrayType::Normal, 0);
+  VarDecl *VKnl = VarDecl::Create(
+      AST, S.CurContext, SL, SL, &AST.Idents.get("knl"), KnlStrTy,
+      AST.getTrivialTypeSourceInfo(KnlStrTy), SC_None);
+  StringLiteral *KSL = StringLiteral::Create(AST, Knl, StringLiteral::Ordinary,
+                                             false, KnlStrTy, SL);
+  ImplicitCastExpr *ICE =
+      ImplicitCastExpr::Create(AST, ConstStringTy, CK_LValueToRValue, KSL,
+                               nullptr, VK_PRValue, FPOptionsOverride());
+  VKnl->setInit(ICE);
+  D.push_back(VKnl);
+  // FIXME: Remove the DeclGroupRef::Create
+  Stmts.push_back(
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
+
+  // We will create `const char *arg[L] = "..."` variable to hold the kernel
+  // argument names
+  D.clear();
+  QualType KnlArgTy =
+      AST.getConstantArrayType(ConstCharTy, llvm::APInt(32, KArgs.size() + 1),
+                               nullptr, ArrayType::Normal, 0);
+  VarDecl *VArgs = VarDecl::Create(
+      AST, S.CurContext, SL, SL, &AST.Idents.get("args"), KnlArgTy,
+      AST.getTrivialTypeSourceInfo(KnlArgTy), SC_None);
+  StringLiteral *ASL = StringLiteral::Create(
+      AST, KArgs, StringLiteral::Ordinary, false, KnlArgTy, SL);
+  ICE = ImplicitCastExpr::Create(AST, ConstStringTy, CK_LValueToRValue, ASL,
+                                 nullptr, VK_PRValue, FPOptionsOverride());
+  VArgs->setInit(ICE);
+  D.push_back(VArgs);
+  // FIXME: Remove the DeclGroupRef::Create
+  Stmts.push_back(
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
+
+  // Next we create the decl for `const char *annotations[N] = {...}
+  D.clear();
   QualType StringArrayTy1 = AST.getConstantArrayType(
-      StringTy, llvm::APInt(32, annotations.size() + 1), nullptr,
+      ConstStringTy, llvm::APInt(32, annotations.size() + 1), nullptr,
       ArrayType::Normal, 0);
   VarDecl *ANT = VarDecl::Create(
       AST, S.CurContext, SL, SL, &AST.Idents.get("annotations"), StringArrayTy1,
-      AST.getTrivialTypeSourceInfo(StringArrayTy1), SC_Static);
+      AST.getTrivialTypeSourceInfo(StringArrayTy1), SC_None);
+
   llvm::SmallVector<Expr *, 16> InitList;
   for (auto ant : annotations) {
-    StringLiteral *L = StringLiteral::Create(
-        AST, ant, StringLiteral::StringKind::Ordinary, false, StringTy, SL);
+    QualType AnnotTy =
+        AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, ant.size() + 1),
+                                 nullptr, ArrayType::Normal, 0);
+    StringLiteral *L =
+        StringLiteral::Create(AST, ant, StringLiteral::StringKind::Ordinary,
+                              false, AnnotTy, SourceLocation());
     ImplicitCastExpr *ICE =
-        ImplicitCastExpr::Create(AST, StringTy, CK_ArrayToPointerDecay, L,
+        ImplicitCastExpr::Create(AST, ConstStringTy, CK_ArrayToPointerDecay, L,
                                  nullptr, VK_PRValue, FPOptionsOverride());
     InitList.push_back(ICE);
   }
   IntegerLiteral *Zero =
       IntegerLiteral::Create(AST, llvm::APInt(32, 0), IntTy, SL);
   ImplicitCastExpr *ICEZ =
-      ImplicitCastExpr::Create(AST, IntTy, CK_NullToPointer, Zero, nullptr,
+      ImplicitCastExpr::Create(AST, StringTy, CK_NullToPointer, Zero, nullptr,
                                VK_PRValue, FPOptionsOverride());
   InitList.push_back(ICEZ);
 
-  ANT->setInit(new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL));
+  Expr *ILE = new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL);
+  ILE->setType(StringArrayTy1);
+  ANT->setInit(ILE);
   D.push_back(ANT);
 
-  QualType StringArrayTy2 =
-      AST.getConstantArrayType(StringTy, llvm::APInt(32, clauses.size() + 1),
-                               nullptr, ArrayType::Normal, 0);
+  // Next const char *clauses[M] = { ....};
+  InitList.clear();
+  QualType StringArrayTy2 = AST.getConstantArrayType(
+      ConstStringTy, llvm::APInt(32, clauses.size() + 1), nullptr,
+      ArrayType::Normal, 0);
   VarDecl *CLS = VarDecl::Create(
       AST, S.CurContext, SL, SL, &AST.Idents.get("clauses"), StringArrayTy2,
-      AST.getTrivialTypeSourceInfo(StringArrayTy2), SC_Static);
-  InitList.clear();
+      AST.getTrivialTypeSourceInfo(StringArrayTy2), SC_None);
+
   for (auto cls : clauses) {
+    QualType ClauseTy =
+        AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, cls.size() + 1),
+                                 nullptr, ArrayType::Normal, 0);
     StringLiteral *L = StringLiteral::Create(
-        AST, cls, StringLiteral::StringKind::Ordinary, false, StringTy, SL);
+        AST, cls, StringLiteral::StringKind::Ordinary, false, ClauseTy, SL);
     ImplicitCastExpr *ICE =
-        ImplicitCastExpr::Create(AST, StringTy, CK_ArrayToPointerDecay, L,
+        ImplicitCastExpr::Create(AST, ConstStringTy, CK_ArrayToPointerDecay, L,
                                  nullptr, VK_PRValue, FPOptionsOverride());
     InitList.push_back(ICE);
   }
   InitList.push_back(ICEZ);
-  CLS->setInit(new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL));
+  ILE = new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL);
+  ILE->setType(StringArrayTy2);
+  CLS->setInit(ILE);
   D.push_back(CLS);
 
   Stmts.push_back(
@@ -751,7 +806,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, KNL, KArgs, CLS, ANT, EV);
+  CreateNompJitCall(Stmts, AST, ID, VKnl, VArgs, CLS, ANT, EV);
 
   // Next we create AST node for nomp_run().
   CreateNompRunCall(Stmts, AST, ID, EV);
