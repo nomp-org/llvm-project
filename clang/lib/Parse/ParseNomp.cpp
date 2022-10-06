@@ -104,6 +104,9 @@ static inline ForClause GetForClause(const llvm::StringRef pragma) {
       .Default(ForClauseInvalid);
 }
 
+//==============================================================================
+// Error handling
+//
 static inline void NompHandleError(unsigned DiagID, Token &Tok, Parser &P,
                                    int LO = 0) {
   Preprocessor &PP = P.getPreprocessor();
@@ -128,11 +131,8 @@ static inline void NompHandleError3(unsigned DiagID, Token &Tok,
 //==============================================================================
 // Helper functions: Tokens to Clang Stmt conversions
 //
-static bool GetVariableAsFuncArg(ImplicitCastExpr *&ICE, VarDecl *&VD,
-                                 Token &tok, Parser &P) {
+static VarDecl *LookupVarDecl(Token &tok, Parser &P) {
   Sema &S = P.getActions();
-  ASTContext &AST = S.getASTContext();
-
   tok::TokenKind TK = tok.getKind();
   if (TK != tok::identifier) {
     // If the token is not an identifier, it is an error
@@ -142,29 +142,17 @@ static bool GetVariableAsFuncArg(ImplicitCastExpr *&ICE, VarDecl *&VD,
     // If not found, check on the translation Unit scope. If not found
     // in thre either, it's an error.
     DeclarationName DN = DeclarationName(tok.getIdentifierInfo());
-    VD = dyn_cast_or_null<VarDecl>(
+    VarDecl *VD = dyn_cast_or_null<VarDecl>(
         S.LookupSingleName(P.getCurScope(), DN, SourceLocation(),
                            Sema::LookupNameKind::LookupOrdinaryName));
     if (!VD)
       VD = dyn_cast_or_null<VarDecl>(
           S.LookupSingleName(S.TUScope, DN, SourceLocation(),
                              Sema::LookupNameKind::LookupOrdinaryName));
-
-    if (VD) {
-      DeclRefExpr *DRE = DeclRefExpr::Create(
-          AST, NestedNameSpecifierLoc(), SourceLocation(), VD, false,
-          tok.getLocation(), VD->getType(), VK_PRValue);
-      ICE = ImplicitCastExpr::Create(AST, VD->getType(), CK_LValueToRValue, DRE,
-                                     nullptr, VK_PRValue, FPOptionsOverride());
-      P.ConsumeToken();
-      return true;
-    }
-
-    // Variable declaration not found
-    NompHandleError3(diag::err_nomp_no_vardecl_found, tok, DN.getAsString(), P);
+    if (VD)
+      return VD;
   }
-
-  return false;
+  return nullptr;
 }
 
 static CallExpr *CreateCallExpr(const ASTContext &AST, const SourceLocation &SL,
@@ -198,18 +186,20 @@ static bool FindLibNompFuncDecl(llvm::StringRef LNF, Sema &S) {
 //==============================================================================
 // Parse and generate calls for Nomp API functions
 //
-int Parser::ParseNompExpr(llvm::SmallVector<Expr *, 16> &EL) {
+Expr *Parser::ParseNompExpr() {
   ExprResult LHS = ParseAssignmentExpression();
   ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
   if (ER.isUsable())
-    EL.push_back(ER.getAs<Expr>());
-  return !ER.isUsable();
+    return ER.getAs<Expr>();
+  return nullptr;
 }
 
 void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
                                           llvm::StringRef Pragma) {
   while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
-    ParseNompExpr(EL);
+    Expr *E = ParseNompExpr();
+    if (E)
+      EL.push_back(E);
     if (Tok.isNot(tok::r_paren))
       if (!TryConsumeToken(tok::comma))
         NompHandleError3(diag::err_nomp_comma_expected, Tok, Pragma, *this);
@@ -274,32 +264,60 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     SourceLocation TL = Tok.getLocation();
 
     // Array pointer
-    ImplicitCastExpr *ICE;
-    VarDecl *VD;
-    if (!GetVariableAsFuncArg(ICE, VD, Tok, *this))
+    VarDecl *VD = LookupVarDecl(Tok, *this);
+    if (!VD) {
+      // Variable declaration not found
+      DeclarationName DN = DeclarationName(Tok.getIdentifierInfo());
+      NompHandleError3(diag::err_nomp_no_vardecl_found, Tok, DN.getAsString(),
+                       *this);
       return StmtEmpty();
-
-    const Type *T = ICE->getType().getTypePtr();
-    if (!T->isPointerType()) {
+    }
+    const Type *T = VD->getType().getTypePtr();
+    if (!T->isPointerType() && !T->isArrayType()) {
       NompHandleError3(diag::err_nomp_pointer_type_expected, Tok, "update",
                        *this);
       return StmtEmpty();
     }
+
+    DeclRefExpr *DRE =
+        DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), VD,
+                            false, TL, VD->getType(), VK_PRValue);
+    QualType VoidPtrTy = AST.getPointerType(AST.getConstType(AST.VoidTy));
+    auto CK = CK_LValueToRValue;
+    if (T->isArrayType())
+      CK = CK_ArrayToPointerDecay;
+    ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
+        AST, VoidPtrTy, CK, DRE, nullptr, VK_PRValue, FPOptionsOverride());
     FuncArgs.push_back(ICE);
+    ConsumeToken();
 
     // Start offset
     if (!TryConsumeToken(tok::l_square)) {
       NompHandleError3(diag::err_nomp_lsquare_expected, Tok, "update", *this);
       return StmtEmpty();
     }
-    ParseNompExpr(FuncArgs);
+    Expr *E = ParseNompExpr();
+    if (!E) {
+      NompHandleError(diag::err_nomp_invalid_expression, Tok, *this);
+      return StmtEmpty();
+    }
+    ICE = ImplicitCastExpr::Create(AST, AST.getSizeType(), CK_LValueToRValue, E,
+                                   nullptr, VK_PRValue, FPOptionsOverride());
+    FuncArgs.push_back(ICE);
 
     // End offset
     if (!TryConsumeToken(tok::comma)) {
       NompHandleError3(diag::err_nomp_comma_expected, Tok, "update", *this);
       return StmtEmpty();
     }
-    ParseNompExpr(FuncArgs);
+    E = ParseNompExpr();
+    if (!E) {
+      NompHandleError(diag::err_nomp_invalid_expression, Tok, *this);
+      return StmtEmpty();
+    }
+    ICE = ImplicitCastExpr::Create(AST, AST.getSizeType(), CK_LValueToRValue, E,
+                                   nullptr, VK_PRValue, FPOptionsOverride());
+    FuncArgs.push_back(ICE);
 
     if (!TryConsumeToken(tok::r_square)) {
       NompHandleError3(diag::err_nomp_rsquare_expected, Tok, "update", *this);
@@ -412,8 +430,8 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
     KAS << V->getNameAsString();
     count++;
     if (count < size) {
-      KS << ", ";
-      KAS << ", ";
+      KS << ",";
+      KAS << ",";
     } else {
       KS << ")";
     }

@@ -1510,6 +1510,8 @@ def err_nomp_repeated_transform_clause: Error<
 def err_nomp_invalid_directive: Error<"Invalid nomp directive at line %0">;
 def err_nomp_invalid_number_of_args: Error<
   "Only %0 argument(s) given to nomp %1 which expects %2 arguments at line %3">;
+def err_nomp_invalid_expression: Error<
+  "Unable to parse expression at line %0 column %1">;
 
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<
