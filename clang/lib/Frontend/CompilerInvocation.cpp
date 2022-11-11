@@ -3818,6 +3818,9 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
     }
   }
 
+  // Check if -fnomp is specified and set default to version 1.0
+  Opts.Nomp = Args.hasArg(OPT_fnomp) ? 10 : 0;
+
   // Check if -fopenmp is specified and set default version to 5.0.
   Opts.OpenMP = Args.hasArg(OPT_fopenmp) ? 50 : 0;
   // Check if -fopenmp-simd is specified.

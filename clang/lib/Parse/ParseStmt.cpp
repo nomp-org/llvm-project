@@ -467,6 +467,10 @@ Retry:
     // Do not prohibit attributes if they were OpenMP attributes.
     return ParseOpenMPDeclarativeOrExecutableDirective(StmtCtx);
 
+  case tok::annot_pragma_nomp:
+    ProhibitAttributes(CXX11Attrs);
+    return ParseNompDirective(StmtCtx);
+
   case tok::annot_pragma_ms_pointers_to_members:
     ProhibitAttributes(CXX11Attrs);
     ProhibitAttributes(GNUAttrs);

@@ -6157,6 +6157,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_fdiagnostics_show_template_tree);
   Args.AddLastArg(CmdArgs, options::OPT_fno_elide_type);
 
+  // Forward flags for Nomp.
+  if (Args.hasFlag(options::OPT_fnomp, options::OPT_fno_nomp, false))
+    CmdArgs.push_back("-fnomp");
+
   // Forward flags for OpenMP. We don't do this if the current action is an
   // device offloading action other than OpenMP.
   if (Args.hasFlag(options::OPT_fopenmp, options::OPT_fopenmp_EQ,

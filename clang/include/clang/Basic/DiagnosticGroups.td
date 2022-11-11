@@ -1263,6 +1263,9 @@ def OpenMP : DiagGroup<"openmp", [
     OpenMPMapping, OpenMP51Ext
   ]>;
 
+// Nomp warnings and errors. Just one group for now
+def NompWarningsAndErrors: DiagGroup<"nomp-warnings-and-errors">;
+
 // Backend warnings.
 def BackendInlineAsm : DiagGroup<"inline-asm">;
 def BackendSourceMgr : DiagGroup<"source-mgr">;

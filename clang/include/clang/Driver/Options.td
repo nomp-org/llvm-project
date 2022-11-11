@@ -7034,3 +7034,11 @@ def dxc_entrypoint : Option<["--", "/", "-"], "E", KIND_JOINED_OR_SEPARATE>,
                      Group<dxc_Group>,
                      Flags<[DXCOption, NoXarchOption]>,
                      HelpText<"Entry point name">;
+
+//===----------------------------------------------------------------------===//
+// Nomp Options
+//===----------------------------------------------------------------------===//
+
+def fnomp: Flag<["-"], "fnomp">, Group<f_Group>, Flags<[CC1Option, NoArgumentUnused]>,
+  HelpText<"Parse Nomp pragmas and generate libnomp API calls">;
+def fno_nomp: Flag<["-"], "fno-nomp">, Group<f_Group>, Flags<[NoArgumentUnused]>;
