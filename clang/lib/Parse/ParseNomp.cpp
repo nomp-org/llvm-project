@@ -412,31 +412,29 @@ public:
 };
 } // namespace
 
-static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
-                           std::string &KArgs, const std::string &KName,
-                           ForStmt *FS, const SourceManager &SM,
-                           const clang::LangOptions &Opts) {
+static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
+                             const std::string &KnlName, ForStmt *FS,
+                             const SourceManager &SM,
+                             const clang::LangOptions &Opts) {
   // Find the External VarDecls in the for loop
-  ExternalVarRefFinder EVRF;
-  EVRF.VisitForStmt(FS);
-  EVRF.GetExternalVarDecls(EV);
+  ExternalVarRefFinder ExtVars;
+  ExtVars.VisitForStmt(FS);
+  ExtVars.GetExternalVarDecls(EV);
 
   clang::PrintingPolicy Policy(Opts);
-  llvm::raw_string_ostream KS(Knl), KAS(KArgs);
-  KS << "void " << KName << "(";
+  llvm::raw_string_ostream KnlStream(KnlStr);
+
+  KnlStream << "void " << KnlName << "(";
   unsigned int size = EV.size(), count = 0;
   for (auto V : EV) {
-    V->print(KS, Policy, 0);
-    KAS << V->getNameAsString();
+    V->print(KnlStream, Policy, 0);
     count++;
-    if (count < size) {
-      KS << ",";
-      KAS << ",";
-    } else {
-      KS << ")";
-    }
+    if (count < size)
+      KnlStream << ",";
+    else
+      KnlStream << ")";
   }
-  KS << " {\n";
+  KnlStream << " {\n";
 
   SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
   unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
@@ -445,9 +443,9 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
   for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
     ;
   const char *ptr = bfr.data();
-  Knl = Knl + std::string(ptr + s, n - s + 2);
-
-  KS << "}";
+  // Refator -- push to KnlStream
+  KnlStr = KnlStr + std::string(ptr + s, n - s + 2);
+  KnlStream << "}";
 }
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
@@ -509,27 +507,42 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
     QualType VT = V->getType();
     const Type *T = VT.getTypePtrOrNull();
     if (T) {
-      FuncArgs.push_back(IntegerLiteral::Create(
-          AST,
-          llvm::APInt(32, TypeInteger * T->isIntegerType() +
-                              TypeFloat * T->isFloatingType() +
-                              TypePointer * T->isPointerType()),
-          IntTy, SourceLocation()));
+      // TODO: name of the variable as a string
+      std::string name = V->getNameAsString();
+      QualType StrTy =
+          AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, name.size() + 1),
+                                   nullptr, ArrayType::Normal, 0);
+      StringLiteral *SL = StringLiteral::Create(
+          AST, name, StringLiteral::Ordinary, false, StrTy, SourceLocation());
+      ImplicitCastExpr *ICE =
+          ImplicitCastExpr::Create(AST, StrTy, CK_ArrayToPointerDecay, SL,
+                                   nullptr, VK_PRValue, FPOptionsOverride());
+      FuncArgs.push_back(ICE);
 
+      // type
+      int type = TypeInteger * T->isIntegerType() +
+                 TypeFloat * T->isFloatingType() +
+                 TypePointer * T->isPointerType();
+      FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, type),
+                                                IntTy, SourceLocation()));
+
+      // sizeof(variable)
+      FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
+          UETT_SizeOf, AST.getTrivialTypeSourceInfo(VT), AST.getSizeType(),
+          SourceLocation(), SourceLocation()));
+
+      // Pointer to variable
       DeclRefExpr *DRE =
           DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
                               V, false, SourceLocation(), VT, VK_LValue);
-      if (T->isPointerType())
+      if (T->isPointerType()) {
         FuncArgs.push_back(ImplicitCastExpr::Create(AST, VT, CK_LValueToRValue,
                                                     DRE, nullptr, VK_PRValue,
                                                     FPOptionsOverride()));
-      else {
+      } else {
         FuncArgs.push_back(UnaryOperator::Create(
             AST, DRE, UO_AddrOf, AST.getPointerType(VT), VK_PRValue,
             OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
-        FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
-            UETT_SizeOf, AST.getTrivialTypeSourceInfo(VT), AST.getSizeType(),
-            SourceLocation(), SourceLocation()));
       }
     }
   }
@@ -637,19 +650,17 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   }
 
   // Parse the for statement
-  std::set<VarDecl *> EV;
-  std::string Knl, KArgs;
-
-  // Kenel name is set to `loopy_kernel` for now -- user should be able to set
-  // this.
-  std::string KName = "loopy_kernel";
   ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
-  ProcessForStmt(EV, Knl, KArgs, KName, FS,
-                 getPreprocessor().getSourceManager(), AST.getLangOpts());
+
+  std::set<VarDecl *> EV;
+  std::string Knl;
+  GetExtVarsAndKnl(EV, Knl, "loopy_kernel", FS,
+                   getPreprocessor().getSourceManager(), AST.getLangOpts());
 
   // We are going to create all our statements (declarations, function calls)
   // into the following vector and then create a compound statement out of it.
   llvm::SmallVector<Stmt *, 16> Stmts;
+
   // We will collect the DeclStmts in the following array.
   llvm::SmallVector<Decl *, 3> D;
 
@@ -689,14 +700,15 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
   // Next we create the decl for `const char *clauses[N] = {...}
-  llvm::SmallVector<Expr *, 16> InitList;
-  QualType StringArrayTy1 = AST.getConstantArrayType(
+  D.clear();
+  QualType ClausesStrTy = AST.getConstantArrayType(
       ConstStringTy, llvm::APInt(32, clauses.size() + 1), nullptr,
       ArrayType::Normal, 0);
   VarDecl *CLS = VarDecl::Create(
-      AST, S.CurContext, SL, SL, &AST.Idents.get("clauses"), StringArrayTy1,
-      AST.getTrivialTypeSourceInfo(StringArrayTy1), SC_None);
+      AST, S.CurContext, SL, SL, &AST.Idents.get("clauses"), ClausesStrTy,
+      AST.getTrivialTypeSourceInfo(ClausesStrTy), SC_None);
 
+  llvm::SmallVector<Expr *, 16> InitList;
   for (auto cls : clauses) {
     QualType ClauseTy =
         AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, cls.size() + 1),
@@ -717,8 +729,9 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   InitList.push_back(ICEZ);
 
   Expr *ILE = new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL);
-  ILE->setType(StringArrayTy1);
+  ILE->setType(ClausesStrTy);
   CLS->setInit(ILE);
+
   D.push_back(CLS);
 
   Stmts.push_back(
