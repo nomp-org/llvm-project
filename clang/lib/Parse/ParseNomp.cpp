@@ -452,8 +452,7 @@ static void ProcessForStmt(std::set<VarDecl *> &EV, std::string &Knl,
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID, VarDecl *VKNL,
-                              VarDecl *VArgs, VarDecl *CLS, VarDecl *ANT,
-                              const std::set<VarDecl *> &EV) {
+                              VarDecl *VCLS) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
   SourceLocation SL = SourceLocation();
 
@@ -478,68 +477,13 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
   QualType CharArrayTy2 = AST.getPointerType(CharArrayTy1);
 
-  // 3rd argument is the user defined annotations.
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, ANT, false, SL,
-                            ANT->getType(), VK_LValue);
+  // 3rd argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
+  // Currently, we support `transform`, `annotate` and `jit`
+  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VCLS, false, SL,
+                            VCLS->getType(), VK_LValue);
   FuncArgs.push_back(ImplicitCastExpr::Create(
       AST, CharArrayTy2, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
-
-  // 4th argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
-  // Currently, we support `transform` and `jit`
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, CLS, false, SL,
-                            CLS->getType(), VK_LValue);
-  FuncArgs.push_back(ImplicitCastExpr::Create(
-      AST, CharArrayTy2, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
-      VK_PRValue, FPOptionsOverride()));
-
-  // 5th argument is the number of external arguments.
-  QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
-  FuncArgs.push_back(
-      IntegerLiteral::Create(AST, llvm::APInt(32, EV.size()), IntTy, SL));
-
-  // 6th and other arguments are the kernel arg names in a comma separated
-  // string. We need this to evaluate the loop bounds. Currently, we pass
-  // everything but only need scalar arguments (floats and ints), not the
-  // pointer arguments.
-  DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VArgs, false, SL,
-                            VArgs->getType(), VK_LValue);
-  FuncArgs.push_back(ImplicitCastExpr::Create(
-      AST, CharArrayTy1, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
-      VK_PRValue, FPOptionsOverride()));
-
-  // 7th and beyond ...
-  for (auto V : EV) {
-    // We will either have {NOMP_SCALAR, sizeof(Type), DRE(Addr_Of())} or
-    // {NOMP_PTR, sizeof(Pointee Type), DRE()} based on if T is a pointer type
-    // or not.
-    QualType VT = V->getType();
-    const Type *T = VT.getTypePtrOrNull();
-    if (T) {
-      FuncArgs.push_back(IntegerLiteral::Create(
-          AST,
-          llvm::APInt(32, TypeInteger * T->isIntegerType() +
-                              TypeFloat * T->isFloatingType() +
-                              TypePointer * T->isPointerType()),
-          IntTy, SL));
-
-      QualType TT = T->isPointerType() ? T->getPointeeType() : VT;
-      FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
-          UETT_SizeOf, AST.getTrivialTypeSourceInfo(TT), AST.getSizeType(), SL,
-          SL));
-
-      DeclRefExpr *DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL,
-                                             V, false, SL, VT, VK_LValue);
-      if (T->isPointerType())
-        FuncArgs.push_back(ImplicitCastExpr::Create(AST, VT, CK_LValueToRValue,
-                                                    DRE, nullptr, VK_PRValue,
-                                                    FPOptionsOverride()));
-      else
-        FuncArgs.push_back(UnaryOperator::Create(
-            AST, DRE, UO_AddrOf, AST.getPointerType(VT), VK_PRValue,
-            OK_Ordinary, SL, false, FPOptionsOverride()));
-    }
-  }
 
   Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
                                  ArrayRef<Expr *>(FuncArgs),
@@ -599,15 +543,19 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
 
-  // Process auxiliary pragmas and annotations supported after `#pragma nomp
+  // Process auxiliary pragmas (i.e., clauses) supported after `#pragma nomp
   // for`. Mainly we want to support `annotate`, `tranform` and `jit` for the
   // time being. All of the above should be parsed as an identifier token.
-  unsigned transformPresent = 0;
-  std::vector<std::string> clauses, annotations;
+  unsigned transformDetected = 0;
+  std::vector<std::string> clauses;
   while (Tok.isNot(tok::annot_pragma_nomp_end)) {
     ForClause clause = ForClauseInvalid;
-    if (Tok.is(tok::identifier))
+    if (Tok.is(tok::identifier)) {
       clause = GetForClause(Tok.getIdentifierInfo()->getName());
+    } else {
+      NompHandleError(diag::err_nomp_identifier_expected, Tok, *this);
+      return StmtEmpty();
+    }
 
     // Should be a valid for clause -- otherwise print error and exit.
     if (clause == ForClauseInvalid) {
@@ -618,7 +566,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
     // `transform` can only be present once -- if there are two transform
     // clauses, it is an error.
-    if (transformPresent && clause == ForClauseTransform) {
+    if (transformDetected && clause == ForClauseTransform) {
       NompHandleError(diag::err_nomp_repeated_transform_clause, Tok, *this);
       return StmtEmpty();
     }
@@ -631,24 +579,28 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
       return StmtEmpty();
     }
 
-    // `jit` and `transform` both only take a single string literal as input.
-    // `annotate` takes key-value pairs. In any case, we should get a string
-    // literal next.
+    // `transform` and `annotate` take key-value pairs. `jit` takes a variable
+    // ame. In any case, we should get a string literal next.
+    // FIXME: This can be a string variable as well. Need to add the support for
+    // that.
     if (Tok.isNot(tok::string_literal)) {
       NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
       return StmtEmpty();
     }
 
-    // Store the string literal and consume the token
+    // Store the clause, string literal and consume the token.
+    clauses.push_back(ForClauses[clause]);
     std::string SL0 =
         std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
+    clauses.push_back(SL0);
+
     ConsumeToken();
 
-    // If we are handling an `annotate` clause, we should expect one more string
-    // literal after a comma.
-    if (clause == ForClauseAnnotate) {
-      annotations.push_back(SL0);
-
+    // If we are handling an `annotate` and `transform` clauses, we should
+    // expect one more string literal after a comma.
+    // FIXME: This can be a string variable as well. Need to add the support for
+    // that.
+    if (clause == ForClauseAnnotate || clause == ForClauseTransform) {
       if (!TryConsumeToken(tok::comma)) {
         NompHandleError(diag::err_nomp_comma_expected, Tok, *this);
         return StmtEmpty();
@@ -660,11 +612,9 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
       std::string SL1 =
           std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
+      clauses.push_back(SL1);
+
       ConsumeToken();
-      annotations.push_back(SL1);
-    } else { // `jit` or `transform`
-      clauses.push_back(ForClauses[clause]);
-      clauses.push_back(SL0);
     }
 
     if (!TryConsumeToken(tok::r_paren)) {
@@ -713,7 +663,6 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
       IntTy, VK_PRValue, OK_Ordinary, SL, false, FPOptionsOverride());
   ID->setInit(M1);
   D.push_back(ID);
-  // FIXME: Remove the DeclGroupRef::Create
   Stmts.push_back(
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
@@ -736,71 +685,17 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
                                nullptr, VK_PRValue, FPOptionsOverride());
   VKnl->setInit(ICE);
   D.push_back(VKnl);
-  // FIXME: Remove the DeclGroupRef::Create
   Stmts.push_back(
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
-  // We will create `const char *arg[L] = "..."` variable to hold the kernel
-  // argument names
-  D.clear();
-  QualType KnlArgTy =
-      AST.getConstantArrayType(ConstCharTy, llvm::APInt(32, KArgs.size() + 1),
-                               nullptr, ArrayType::Normal, 0);
-  VarDecl *VArgs = VarDecl::Create(
-      AST, S.CurContext, SL, SL, &AST.Idents.get("args"), KnlArgTy,
-      AST.getTrivialTypeSourceInfo(KnlArgTy), SC_None);
-  StringLiteral *ASL = StringLiteral::Create(
-      AST, KArgs, StringLiteral::Ordinary, false, KnlArgTy, SL);
-  ICE = ImplicitCastExpr::Create(AST, ConstStringTy, CK_LValueToRValue, ASL,
-                                 nullptr, VK_PRValue, FPOptionsOverride());
-  VArgs->setInit(ICE);
-  D.push_back(VArgs);
-  // FIXME: Remove the DeclGroupRef::Create
-  Stmts.push_back(
-      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
-
-  // Next we create the decl for `const char *annotations[N] = {...}
-  D.clear();
-  QualType StringArrayTy1 = AST.getConstantArrayType(
-      ConstStringTy, llvm::APInt(32, annotations.size() + 1), nullptr,
-      ArrayType::Normal, 0);
-  VarDecl *ANT = VarDecl::Create(
-      AST, S.CurContext, SL, SL, &AST.Idents.get("annotations"), StringArrayTy1,
-      AST.getTrivialTypeSourceInfo(StringArrayTy1), SC_None);
-
+  // Next we create the decl for `const char *clauses[N] = {...}
   llvm::SmallVector<Expr *, 16> InitList;
-  for (auto ant : annotations) {
-    QualType AnnotTy =
-        AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, ant.size() + 1),
-                                 nullptr, ArrayType::Normal, 0);
-    StringLiteral *L =
-        StringLiteral::Create(AST, ant, StringLiteral::StringKind::Ordinary,
-                              false, AnnotTy, SourceLocation());
-    ImplicitCastExpr *ICE =
-        ImplicitCastExpr::Create(AST, ConstStringTy, CK_ArrayToPointerDecay, L,
-                                 nullptr, VK_PRValue, FPOptionsOverride());
-    InitList.push_back(ICE);
-  }
-  IntegerLiteral *Zero =
-      IntegerLiteral::Create(AST, llvm::APInt(32, 0), IntTy, SL);
-  ImplicitCastExpr *ICEZ =
-      ImplicitCastExpr::Create(AST, StringTy, CK_NullToPointer, Zero, nullptr,
-                               VK_PRValue, FPOptionsOverride());
-  InitList.push_back(ICEZ);
-
-  Expr *ILE = new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL);
-  ILE->setType(StringArrayTy1);
-  ANT->setInit(ILE);
-  D.push_back(ANT);
-
-  // Next const char *clauses[M] = { ....};
-  InitList.clear();
-  QualType StringArrayTy2 = AST.getConstantArrayType(
+  QualType StringArrayTy1 = AST.getConstantArrayType(
       ConstStringTy, llvm::APInt(32, clauses.size() + 1), nullptr,
       ArrayType::Normal, 0);
   VarDecl *CLS = VarDecl::Create(
-      AST, S.CurContext, SL, SL, &AST.Idents.get("clauses"), StringArrayTy2,
-      AST.getTrivialTypeSourceInfo(StringArrayTy2), SC_None);
+      AST, S.CurContext, SL, SL, &AST.Idents.get("clauses"), StringArrayTy1,
+      AST.getTrivialTypeSourceInfo(StringArrayTy1), SC_None);
 
   for (auto cls : clauses) {
     QualType ClauseTy =
@@ -813,9 +708,16 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
                                  nullptr, VK_PRValue, FPOptionsOverride());
     InitList.push_back(ICE);
   }
+
+  IntegerLiteral *Zero =
+      IntegerLiteral::Create(AST, llvm::APInt(32, 0), IntTy, SL);
+  ImplicitCastExpr *ICEZ =
+      ImplicitCastExpr::Create(AST, StringTy, CK_NullToPointer, Zero, nullptr,
+                               VK_PRValue, FPOptionsOverride());
   InitList.push_back(ICEZ);
-  ILE = new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL);
-  ILE->setType(StringArrayTy2);
+
+  Expr *ILE = new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL);
+  ILE->setType(StringArrayTy1);
   CLS->setInit(ILE);
   D.push_back(CLS);
 
@@ -824,7 +726,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, VKnl, VArgs, CLS, ANT, EV);
+  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS);
 
   // Next we create AST node for nomp_run().
   CreateNompRunCall(Stmts, AST, ID, EV);
@@ -856,6 +758,9 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
 //         annot_pragma_nomp_end
 //       update-directive:
 //         annot_pragma_nomp ['update' direction simple-variable-list]+
+//         annot_pragma_nomp_end
+//       for-directive:
+//         annot_pragma_nomp 'for'
 //         annot_pragma_nomp_end
 //
 StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
