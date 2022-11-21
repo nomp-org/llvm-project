@@ -65,6 +65,10 @@ enum ForClause {
 };
 std::string ForClauses[3] = {"jit", "transform", "annotate"};
 
+static inline QualType getIntType(ASTContext &AST) {
+  return AST.getIntTypeForBitwidth(32, 1);
+}
+
 //==============================================================================
 // Helper functions: String to Nomp types conversion
 //
@@ -323,9 +327,8 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     FuncArgs.push_back(UETT);
 
     // Update direction
-    QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
-    FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, dirn), IntTy,
-                                              SourceLocation()));
+    FuncArgs.push_back(IntegerLiteral::Create(
+        AST, llvm::APInt(32, dirn), getIntType(AST), SourceLocation()));
 
     FuncCalls.push_back(
         CreateCallExpr(AST, TL, FuncArgs, LibNompFuncs[NompUpdate]));
@@ -496,7 +499,7 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
   // Second argument to nomp_run() is 'nargs' -- total number of arguments to
   // the kernel
   int nargs = EV.size();
-  QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
+  QualType IntTy = getIntType(AST);
   FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, nargs), IntTy,
                                             SourceLocation()));
 
@@ -662,7 +665,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   llvm::SmallVector<Decl *, 3> D;
 
   // First, let's create the statement `static int id = -1;`
-  QualType IntTy = AST.getIntTypeForBitwidth(32, 1);
+  QualType IntTy = getIntType(AST);
   VarDecl *ID =
       VarDecl::Create(AST, S.CurContext, SL, SL, &AST.Idents.get("id"), IntTy,
                       AST.getTrivialTypeSourceInfo(IntTy), SC_Static);
