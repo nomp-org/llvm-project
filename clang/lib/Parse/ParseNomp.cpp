@@ -501,17 +501,19 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
   FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, nargs), IntTy,
                                             SourceLocation()));
 
+  QualType StrTy = AST.getPointerType(AST.CharTy);
   for (auto V : EV) {
     QualType VT = V->getType();
     const Type *T = VT.getTypePtrOrNull();
     if (T) {
       // Name of the variable as a string
       std::string name = V->getNameAsString();
-      QualType StrTy =
+      QualType NameStrTy =
           AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, name.size() + 1),
                                    nullptr, ArrayType::Normal, 0);
-      StringLiteral *SL = StringLiteral::Create(
-          AST, name, StringLiteral::Ordinary, false, StrTy, SourceLocation());
+      StringLiteral *SL =
+          StringLiteral::Create(AST, name, StringLiteral::Ordinary, false,
+                                NameStrTy, SourceLocation());
       ImplicitCastExpr *ICE =
           ImplicitCastExpr::Create(AST, StrTy, CK_ArrayToPointerDecay, SL,
                                    nullptr, VK_PRValue, FPOptionsOverride());
