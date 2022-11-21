@@ -108,23 +108,14 @@ static inline ForClause GetForClause(const llvm::StringRef pragma) {
 // Error handling
 //
 static inline void NompHandleError(unsigned DiagID, Token &Tok, Parser &P,
-                                   int LO = 0) {
+                                   llvm::StringRef Arg = StringRef()) {
   Preprocessor &PP = P.getPreprocessor();
   SourceManager &SM = PP.getSourceManager();
   FullSourceLoc loc(Tok.getLocation(), SM);
-  if (LO)
-    PP.Diag(Tok, DiagID) << loc.getLineNumber();
-  else
+  if (Arg.empty())
     PP.Diag(Tok, DiagID) << loc.getLineNumber() << loc.getColumnNumber();
-  P.SkipUntil(tok::annot_pragma_nomp_end);
-}
-
-static inline void NompHandleError3(unsigned DiagID, Token &Tok,
-                                    llvm::StringRef Arg, Parser &P) {
-  Preprocessor &PP = P.getPreprocessor();
-  SourceManager &SM = PP.getSourceManager();
-  FullSourceLoc loc(Tok.getLocation(), SM);
-  PP.Diag(Tok, DiagID) << Arg << loc.getLineNumber() << loc.getColumnNumber();
+  else
+    PP.Diag(Tok, DiagID) << Arg << loc.getLineNumber() << loc.getColumnNumber();
   P.SkipUntil(tok::annot_pragma_nomp_end);
 }
 
@@ -202,11 +193,11 @@ void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
       EL.push_back(E);
     if (Tok.isNot(tok::r_paren))
       if (!TryConsumeToken(tok::comma))
-        NompHandleError3(diag::err_nomp_comma_expected, Tok, Pragma, *this);
+        NompHandleError(diag::err_nomp_comma_expected, Tok, *this, Pragma);
   }
 
   if (!TryConsumeToken(tok::r_paren))
-    NompHandleError3(diag::err_nomp_rparen_expected, Tok, Pragma, *this);
+    NompHandleError(diag::err_nomp_rparen_expected, Tok, *this, Pragma);
 }
 
 StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
@@ -215,14 +206,14 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
 
   // "("
   if (!TryConsumeToken(tok::l_paren)) {
-    NompHandleError3(diag::err_nomp_lparen_expected, Tok, "init", *this);
+    NompHandleError(diag::err_nomp_lparen_expected, Tok, *this, "init");
     return StmtEmpty();
   }
 
   llvm::SmallVector<Expr *, 16> CallArgs;
   ParseNompExprListUntilRParen(CallArgs, "init");
   if (CallArgs.size() != 3) {
-    NompHandleError3(diag::err_nomp_invalid_number_of_args, Tok, "init", *this);
+    NompHandleError(diag::err_nomp_invalid_number_of_args, Tok, *this, "init");
     return StmtEmpty();
   }
 
@@ -236,7 +227,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
   // "("
   if (!TryConsumeToken(tok::l_paren)) {
-    NompHandleError3(diag::err_nomp_lparen_expected, Tok, "update", *this);
+    NompHandleError(diag::err_nomp_lparen_expected, Tok, *this, "update");
     return StmtEmpty();
   }
 
@@ -253,7 +244,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
   // ":"
   if (!TryConsumeToken(tok::colon)) {
-    NompHandleError3(diag::err_nomp_colon_expected, Tok, "update", *this);
+    NompHandleError(diag::err_nomp_colon_expected, Tok, *this, "update");
     return StmtEmpty();
   }
 
@@ -268,14 +259,14 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     if (!VD) {
       // Variable declaration not found
       DeclarationName DN = DeclarationName(Tok.getIdentifierInfo());
-      NompHandleError3(diag::err_nomp_no_vardecl_found, Tok, DN.getAsString(),
-                       *this);
+      NompHandleError(diag::err_nomp_no_vardecl_found, Tok, *this,
+                      DN.getAsString());
       return StmtEmpty();
     }
     const Type *T = VD->getType().getTypePtr();
     if (!T->isPointerType() && !T->isArrayType()) {
-      NompHandleError3(diag::err_nomp_pointer_type_expected, Tok, "update",
-                       *this);
+      NompHandleError(diag::err_nomp_pointer_type_expected, Tok, *this,
+                      "update");
       return StmtEmpty();
     }
 
@@ -293,7 +284,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
     // Start offset
     if (!TryConsumeToken(tok::l_square)) {
-      NompHandleError3(diag::err_nomp_lsquare_expected, Tok, "update", *this);
+      NompHandleError(diag::err_nomp_lsquare_expected, Tok, *this, "update");
       return StmtEmpty();
     }
     Expr *E = ParseNompExpr();
@@ -307,7 +298,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
     // End offset
     if (!TryConsumeToken(tok::comma)) {
-      NompHandleError3(diag::err_nomp_comma_expected, Tok, "update", *this);
+      NompHandleError(diag::err_nomp_comma_expected, Tok, *this, "update");
       return StmtEmpty();
     }
     E = ParseNompExpr();
@@ -320,7 +311,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
     FuncArgs.push_back(ICE);
 
     if (!TryConsumeToken(tok::r_square)) {
-      NompHandleError3(diag::err_nomp_rsquare_expected, Tok, "update", *this);
+      NompHandleError(diag::err_nomp_rsquare_expected, Tok, *this, "update");
       return StmtEmpty();
     }
 
@@ -343,7 +334,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
   }
 
   if (!TryConsumeToken(tok::r_paren)) {
-    NompHandleError3(diag::err_nomp_rparen_expected, Tok, "update", *this);
+    NompHandleError(diag::err_nomp_rparen_expected, Tok, *this, "update");
     return StmtEmpty();
   }
 
@@ -578,8 +569,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
     // Should be a valid for clause -- otherwise print error and exit.
     if (clause == ForClauseInvalid) {
-      NompHandleError3(diag::err_nomp_invalid_for_clause, Tok,
-                       Tok.getIdentifierInfo()->getName(), *this);
+      NompHandleError(diag::err_nomp_invalid_for_clause, Tok, *this,
+                      Tok.getIdentifierInfo()->getName());
       return StmtEmpty();
     }
 
@@ -593,8 +584,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
     // Consume the clause and the following "(".
     ConsumeToken();
     if (!TryConsumeToken(tok::l_paren)) {
-      NompHandleError3(diag::err_nomp_lparen_expected, Tok, ForClauses[clause],
-                       *this);
+      NompHandleError(diag::err_nomp_lparen_expected, Tok, *this,
+                      ForClauses[clause]);
       return StmtEmpty();
     }
 
@@ -637,21 +628,21 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
     }
 
     if (!TryConsumeToken(tok::r_paren)) {
-      NompHandleError3(diag::err_nomp_rparen_expected, Tok, ForClauses[clause],
-                       *this);
+      NompHandleError(diag::err_nomp_rparen_expected, Tok, *this,
+                      ForClauses[clause]);
       return StmtEmpty();
     }
   }
 
   if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
-    NompHandleError3(diag::err_nomp_eod_expected, Tok, "for", *this);
+    NompHandleError(diag::err_nomp_eod_expected, Tok, *this, "for");
     return StmtEmpty();
   }
 
   // Check if the next token is tok::kw_for. If not, exit. We should skip
   // comments if they exist -- but not doing it right now. TODO for future.
   if (Tok.isNot(tok::kw_for)) {
-    NompHandleError3(diag::err_nomp_for_expected, Tok, "for", *this);
+    NompHandleError(diag::err_nomp_for_expected, Tok, *this, "for");
     return StmtEmpty();
   }
 
@@ -761,7 +752,7 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
   ASTContext &AST = getActions().getASTContext();
 
   if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
-    NompHandleError3(diag::err_nomp_eod_expected, Tok, "finalize", *this);
+    NompHandleError(diag::err_nomp_eod_expected, Tok, *this, "finalize");
     return StmtEmpty();
   }
 
@@ -823,7 +814,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
     result = ParseNompFinalize(SL);
     break;
   case DirectiveInvalid:
-    NompHandleError(diag::err_nomp_invalid_directive, Tok, *this, 1);
+    NompHandleError(diag::err_nomp_invalid_directive, Tok, *this);
     break;
   }
 
