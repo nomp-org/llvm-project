@@ -3450,6 +3450,7 @@ private:
   StmtResult ParseNompInit(const SourceLocation &sLoc);
   StmtResult ParseNompFinalize(const SourceLocation &sLoc);
   StmtResult ParseNompUpdate(const SourceLocation &sLoc);
+  int ParseNompForClauses(std::vector<std::string> &clauses);
   StmtResult ParseNompFor(const SourceLocation &sLoc);
   StmtResult ParseNompDirective(ParsedStmtContext StmtCtx);
 

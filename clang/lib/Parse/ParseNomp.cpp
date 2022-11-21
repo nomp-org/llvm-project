@@ -457,20 +457,18 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       AST, DRE, UO_AddrOf, AST.getPointerType(DRE->getType()), VK_PRValue,
       OK_Ordinary, SL, false, FPOptionsOverride()));
 
-  QualType CharArrayTy1 = AST.getPointerType(AST.getConstType(AST.CharTy));
-
   // 2nd argument is the kernel string (or the for loop) wrapped inside a
   // function.
+  QualType CharArrayTy1 = AST.getPointerType(AST.getConstType(AST.CharTy));
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VKNL, false, SL,
                             VKNL->getType(), VK_LValue);
   FuncArgs.push_back(ImplicitCastExpr::Create(
       AST, CharArrayTy1, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
-  QualType CharArrayTy2 = AST.getPointerType(CharArrayTy1);
-
   // 3rd argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
   // Currently, we support `transform`, `annotate` and `jit`
+  QualType CharArrayTy2 = AST.getPointerType(CharArrayTy1);
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VCLS, false, SL,
                             VCLS->getType(), VK_LValue);
   FuncArgs.push_back(ImplicitCastExpr::Create(
@@ -507,7 +505,7 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
     QualType VT = V->getType();
     const Type *T = VT.getTypePtrOrNull();
     if (T) {
-      // TODO: name of the variable as a string
+      // Name of the variable as a string
       std::string name = V->getNameAsString();
       QualType StrTy =
           AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, name.size() + 1),
@@ -552,36 +550,34 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                  LibNompFuncs[NompRun]));
 }
 
-StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
-  Sema &S = getActions();
-  ASTContext &AST = S.getASTContext();
+int Parser::ParseNompForClauses(std::vector<std::string> &clauses) {
+  ASTContext &AST = getActions().getASTContext();
 
   // Process auxiliary pragmas (i.e., clauses) supported after `#pragma nomp
   // for`. Mainly we want to support `annotate`, `tranform` and `jit` for the
   // time being. All of the above should be parsed as an identifier token.
   unsigned transformDetected = 0;
-  std::vector<std::string> clauses;
   while (Tok.isNot(tok::annot_pragma_nomp_end)) {
     ForClause clause = ForClauseInvalid;
     if (Tok.is(tok::identifier)) {
       clause = GetForClause(Tok.getIdentifierInfo()->getName());
     } else {
       NompHandleError(diag::err_nomp_identifier_expected, Tok, *this);
-      return StmtEmpty();
+      return 1;
     }
 
     // Should be a valid for clause -- otherwise print error and exit.
     if (clause == ForClauseInvalid) {
       NompHandleError(diag::err_nomp_invalid_for_clause, Tok, *this,
                       Tok.getIdentifierInfo()->getName());
-      return StmtEmpty();
+      return 1;
     }
 
     // `transform` can only be present once -- if there are two transform
     // clauses, it is an error.
     if (transformDetected && clause == ForClauseTransform) {
       NompHandleError(diag::err_nomp_repeated_transform_clause, Tok, *this);
-      return StmtEmpty();
+      return 1;
     }
 
     // Consume the clause and the following "(".
@@ -589,7 +585,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
     if (!TryConsumeToken(tok::l_paren)) {
       NompHandleError(diag::err_nomp_lparen_expected, Tok, *this,
                       ForClauses[clause]);
-      return StmtEmpty();
+      return 1;
     }
 
     // `transform` and `annotate` take key-value pairs. `jit` takes a variable
@@ -598,7 +594,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
     // that.
     if (Tok.isNot(tok::string_literal)) {
       NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
-      return StmtEmpty();
+      return 1;
     }
 
     // Store the clause, string literal and consume the token.
@@ -616,11 +612,11 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
     if (clause == ForClauseAnnotate || clause == ForClauseTransform) {
       if (!TryConsumeToken(tok::comma)) {
         NompHandleError(diag::err_nomp_comma_expected, Tok, *this);
-        return StmtEmpty();
+        return 1;
       }
       if (Tok.isNot(tok::string_literal)) {
         NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
-        return StmtEmpty();
+        return 1;
       }
 
       std::string SL1 =
@@ -633,14 +629,24 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
     if (!TryConsumeToken(tok::r_paren)) {
       NompHandleError(diag::err_nomp_rparen_expected, Tok, *this,
                       ForClauses[clause]);
-      return StmtEmpty();
+      return 1;
     }
   }
 
   if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
     NompHandleError(diag::err_nomp_eod_expected, Tok, *this, "for");
-    return StmtEmpty();
+    return 1;
   }
+  return 0;
+}
+
+StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
+  Sema &S = getActions();
+  ASTContext &AST = S.getASTContext();
+
+  std::vector<std::string> clauses;
+  if (ParseNompForClauses(clauses))
+    return StmtEmpty();
 
   // Check if the next token is tok::kw_for. If not, exit. We should skip
   // comments if they exist -- but not doing it right now. TODO for future.
@@ -677,8 +683,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Stmts.push_back(
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
-  QualType ConstCharTy = AST.getConstType(AST.CharTy);
   QualType StringTy = AST.getPointerType(AST.CharTy);
+  QualType ConstCharTy = AST.getConstType(AST.CharTy);
   QualType ConstStringTy = AST.getPointerType(ConstCharTy);
 
   // We will create `const char *knl[K] = "..."` variable to hold the kernel
