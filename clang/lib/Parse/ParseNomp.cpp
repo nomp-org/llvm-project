@@ -493,8 +493,8 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               std::set<VarDecl *> EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
-  // First argument to nomp_run() is 'id' -- output argument which assigns an
-  // unique id to each kernel.
+  // First argument to nomp_run() is 'id' -- input argument which passes an
+  // unique id for each kernel.
   DeclRefExpr *DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
                           false, SourceLocation(), ID->getType(), VK_LValue);
@@ -502,7 +502,13 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                               CK_LValueToRValue, DRE, nullptr,
                                               VK_PRValue, FPOptionsOverride()));
 
+  // Second argument to nomp_run() is 'nargs' -- total number of arguments to
+  // the kernel
+  int nargs = EV.size();
   QualType IntTy = AST.getIntTypeForBitwidth(32, 0);
+  FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, nargs), IntTy,
+                                            SourceLocation()));
+
   for (auto V : EV) {
     QualType VT = V->getType();
     const Type *T = VT.getTypePtrOrNull();
@@ -715,17 +721,20 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
                                  nullptr, ArrayType::Normal, 0);
     StringLiteral *L = StringLiteral::Create(
         AST, cls, StringLiteral::StringKind::Ordinary, false, ClauseTy, SL);
-    ImplicitCastExpr *ICE =
-        ImplicitCastExpr::Create(AST, ConstStringTy, CK_ArrayToPointerDecay, L,
+    ImplicitCastExpr *ICE0 =
+        ImplicitCastExpr::Create(AST, StringTy, CK_ArrayToPointerDecay, L,
                                  nullptr, VK_PRValue, FPOptionsOverride());
-    InitList.push_back(ICE);
+    ImplicitCastExpr *ICE1 =
+        ImplicitCastExpr::Create(AST, ConstStringTy, CK_NoOp, ICE0, nullptr,
+                                 VK_PRValue, FPOptionsOverride());
+    InitList.push_back(ICE1);
   }
 
   IntegerLiteral *Zero =
       IntegerLiteral::Create(AST, llvm::APInt(32, 0), IntTy, SL);
   ImplicitCastExpr *ICEZ =
-      ImplicitCastExpr::Create(AST, StringTy, CK_NullToPointer, Zero, nullptr,
-                               VK_PRValue, FPOptionsOverride());
+      ImplicitCastExpr::Create(AST, ConstStringTy, CK_NullToPointer, Zero,
+                               nullptr, VK_PRValue, FPOptionsOverride());
   InitList.push_back(ICEZ);
 
   Expr *ILE = new (AST) InitListExpr(AST, SL, ArrayRef<Expr *>(InitList), SL);
@@ -735,7 +744,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   D.push_back(CLS);
 
   Stmts.push_back(
-      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 2), SL, SL));
+      new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
