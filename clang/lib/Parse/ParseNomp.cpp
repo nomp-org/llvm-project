@@ -417,10 +417,11 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
 
   clang::PrintingPolicy Policy(Opts);
   Policy.SuppressInitializers = true;
-  llvm::raw_string_ostream KnlStream(KnlStr);
 
+  llvm::raw_string_ostream KnlStream(KnlStr);
   KnlStream << "void " << KnlName << "(";
-  unsigned int size = EV.size(), count = 0;
+
+  unsigned size = EV.size(), count = 0;
   for (auto V : EV) {
     V->print(KnlStream, Policy, 0);
     count++;
@@ -432,15 +433,11 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
   KnlStream << " {\n";
 
   SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
-  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL);
   llvm::StringRef bfr = SM.getBufferData(SM.getFileID(BL));
-  unsigned n = e;
+  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL), n = e;
   for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
     ;
-  const char *ptr = bfr.data();
-  // Refator -- push to KnlStream
-  KnlStr = KnlStr + std::string(ptr + s, n - s + 2);
-  KnlStream << "}";
+  KnlStream << std::string(bfr.data() + s, n - s + 2) << "}";
 }
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
@@ -504,8 +501,8 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
   QualType StrTy = AST.getPointerType(AST.CharTy);
   for (auto V : EV) {
-    QualType VT = V->getType();
-    const Type *T = VT.getTypePtrOrNull();
+    QualType QT = V->getType();
+    const Type *T = QT.getTypePtrOrNull();
     if (T) {
       // Name of the variable as a string
       std::string name = V->getNameAsString();
@@ -523,26 +520,39 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       // type
       int type = TypeInteger * T->isIntegerType() +
                  TypeFloat * T->isFloatingType() +
-                 TypePointer * T->isPointerType();
+                 TypePointer * (T->isPointerType() || T->isArrayType());
+      // TODO: Throw an error
+      // if (type == 0) {
+      //   NompHandleError(diag::err_nomp_identifier_expected, tok, P);
+      // }
       FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, type),
                                                 IntTy, SourceLocation()));
 
+      TypeSourceInfo *TSI;
+      if (T->isArrayType()) {
+        const auto *AT = dyn_cast<ArrayType>(T);
+        QualType QAT = AT->getElementType();
+        TSI = AST.getTrivialTypeSourceInfo(QAT);
+      } else {
+        TSI = AST.getTrivialTypeSourceInfo(QT);
+      }
+
       // sizeof(variable)
       FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
-          UETT_SizeOf, AST.getTrivialTypeSourceInfo(VT), AST.getSizeType(),
-          SourceLocation(), SourceLocation()));
+          UETT_SizeOf, TSI, AST.getSizeType(), SourceLocation(),
+          SourceLocation()));
 
       // Pointer to variable
       DeclRefExpr *DRE =
           DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
-                              V, false, SourceLocation(), VT, VK_LValue);
+                              V, false, SourceLocation(), QT, VK_LValue);
       if (T->isPointerType()) {
-        FuncArgs.push_back(ImplicitCastExpr::Create(AST, VT, CK_LValueToRValue,
+        FuncArgs.push_back(ImplicitCastExpr::Create(AST, QT, CK_LValueToRValue,
                                                     DRE, nullptr, VK_PRValue,
                                                     FPOptionsOverride()));
       } else {
         FuncArgs.push_back(UnaryOperator::Create(
-            AST, DRE, UO_AddrOf, AST.getPointerType(VT), VK_PRValue,
+            AST, DRE, UO_AddrOf, AST.getPointerType(QT), VK_PRValue,
             OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
       }
     }
@@ -554,8 +564,6 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 }
 
 int Parser::ParseNompForClauses(std::vector<std::string> &clauses) {
-  ASTContext &AST = getActions().getASTContext();
-
   // Process auxiliary pragmas (i.e., clauses) supported after `#pragma nomp
   // for`. Mainly we want to support `annotate`, `tranform` and `jit` for the
   // time being. All of the above should be parsed as an identifier token.
