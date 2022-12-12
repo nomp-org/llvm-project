@@ -195,9 +195,10 @@ void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
     Expr *E = ParseNompExpr();
     if (E)
       EL.push_back(E);
-    if (Tok.isNot(tok::r_paren))
+    if (Tok.isNot(tok::r_paren)) {
       if (!TryConsumeToken(tok::comma))
         NompHandleError(diag::err_nomp_comma_expected, Tok, *this, Pragma);
+    }
   }
 
   if (!TryConsumeToken(tok::r_paren))
@@ -267,6 +268,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
                       DN.getAsString());
       return StmtEmpty();
     }
+
     const Type *T = VD->getType().getTypePtr();
     if (!T->isPointerType() && !T->isArrayType()) {
       NompHandleError(diag::err_nomp_pointer_type_expected, Tok, *this,
@@ -278,7 +280,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
         DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), VD,
                             false, TL, VD->getType(), VK_PRValue);
     QualType VoidPtrTy = AST.getPointerType(AST.getConstType(AST.VoidTy));
-    auto CK = CK_LValueToRValue;
+    auto CK = CastKind::CK_LValueToRValue;
     if (T->isArrayType())
       CK = CK_ArrayToPointerDecay;
     ImplicitCastExpr *ICE = ImplicitCastExpr::Create(
@@ -296,8 +298,9 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
       NompHandleError(diag::err_nomp_invalid_expression, Tok, *this);
       return StmtEmpty();
     }
-    ICE = ImplicitCastExpr::Create(AST, AST.getSizeType(), CK_LValueToRValue, E,
-                                   nullptr, VK_PRValue, FPOptionsOverride());
+    ICE = ImplicitCastExpr::Create(AST, AST.getSizeType(),
+                                   CastKind::CK_LValueToRValue, E, nullptr,
+                                   VK_PRValue, FPOptionsOverride());
     FuncArgs.push_back(ICE);
 
     // End offset
@@ -310,8 +313,9 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
       NompHandleError(diag::err_nomp_invalid_expression, Tok, *this);
       return StmtEmpty();
     }
-    ICE = ImplicitCastExpr::Create(AST, AST.getSizeType(), CK_LValueToRValue, E,
-                                   nullptr, VK_PRValue, FPOptionsOverride());
+    ICE = ImplicitCastExpr::Create(AST, AST.getSizeType(),
+                                   CastKind::CK_LValueToRValue, E, nullptr,
+                                   VK_PRValue, FPOptionsOverride());
     FuncArgs.push_back(ICE);
 
     if (!TryConsumeToken(tok::r_square)) {
@@ -488,9 +492,9 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
   DeclRefExpr *DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
                           false, SourceLocation(), ID->getType(), VK_LValue);
-  FuncArgs.push_back(ImplicitCastExpr::Create(AST, ID->getType(),
-                                              CK_LValueToRValue, DRE, nullptr,
-                                              VK_PRValue, FPOptionsOverride()));
+  FuncArgs.push_back(
+      ImplicitCastExpr::Create(AST, ID->getType(), CastKind::CK_LValueToRValue,
+                               DRE, nullptr, VK_PRValue, FPOptionsOverride()));
 
   // Second argument to nomp_run() is 'nargs' -- total number of arguments to
   // the kernel
@@ -547,9 +551,9 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
           DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
                               V, false, SourceLocation(), QT, VK_LValue);
       if (T->isPointerType()) {
-        FuncArgs.push_back(ImplicitCastExpr::Create(AST, QT, CK_LValueToRValue,
-                                                    DRE, nullptr, VK_PRValue,
-                                                    FPOptionsOverride()));
+        FuncArgs.push_back(
+            ImplicitCastExpr::Create(AST, QT, CastKind::CK_LValueToRValue, DRE,
+                                     nullptr, VK_PRValue, FPOptionsOverride()));
       } else {
         FuncArgs.push_back(UnaryOperator::Create(
             AST, DRE, UO_AddrOf, AST.getPointerType(QT), VK_PRValue,
@@ -709,8 +713,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   StringLiteral *KSL = StringLiteral::Create(AST, Knl, StringLiteral::Ordinary,
                                              false, KnlStrTy, SL);
   ImplicitCastExpr *ICE =
-      ImplicitCastExpr::Create(AST, ConstStringTy, CK_LValueToRValue, KSL,
-                               nullptr, VK_PRValue, FPOptionsOverride());
+      ImplicitCastExpr::Create(AST, ConstStringTy, CastKind::CK_LValueToRValue,
+                               KSL, nullptr, VK_PRValue, FPOptionsOverride());
   VKnl->setInit(ICE);
   D.push_back(VKnl);
   Stmts.push_back(
