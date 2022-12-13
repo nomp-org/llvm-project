@@ -45,6 +45,14 @@ enum Directive {
   DirectiveFinalize = 3
 };
 
+enum ForClause {
+  ForClauseInvalid = -1,
+  ForClauseJit = 0,
+  ForClauseTransform = 1,
+  ForClauseAnnotate = 2
+};
+std::string ForClauses[3] = {"jit", "transform", "annotate"};
+
 // FIXME: Following two enums (UpdateDirection and ArgType) should be based
 // on `nomp.h` and sholdn't be hardcoded here.
 enum UpdateDirection {
@@ -55,22 +63,24 @@ enum UpdateDirection {
   UpdateFree = 8
 };
 
-enum ArgType { TypeInteger = 1, TypeFloat = 2, TypePointer = 4 };
+enum ArgType { TypeInt = 1, TypeFloat = 2, TypePointer = 4, TypeUInt = 8 };
 
-enum ForClause {
-  ForClauseInvalid = -1,
-  ForClauseJit = 0,
-  ForClauseTransform = 1,
-  ForClauseAnnotate = 2
-};
-std::string ForClauses[3] = {"jit", "transform", "annotate"};
 
-static inline QualType getIntType(ASTContext &AST) {
+//==============================================================================
+// Helper functions to generate C types.
+//
+static inline QualType getIntType(const ASTContext &AST) {
   return AST.getIntTypeForBitwidth(32, 1);
 }
 
+static inline QualType getConstArrayType(const ASTContext &AST,
+                                         const QualType QT, size_t size,
+                                         ArrayType::ArraySizeModifier AT) {
+  return AST.getConstantArrayType(QT, llvm::APInt(32, size), nullptr, AT, 0);
+}
+
 //==============================================================================
-// Helper functions: String to Nomp types conversion
+// Helper functions for string to nomp type conversion
 //
 static inline LibNompFunc GetLibNompFunc(const llvm::StringRef name) {
   return llvm::StringSwitch<LibNompFunc>(name)
@@ -179,7 +189,7 @@ static bool FindLibNompFuncDecl(llvm::StringRef LNF, Sema &S) {
 }
 
 //==============================================================================
-// Parse and generate calls for Nomp API functions
+// Helper functions to parse expression and convert them to other expressions
 //
 Expr *Parser::ParseNompExpr() {
   ExprResult LHS = ParseAssignmentExpression();
@@ -205,6 +215,22 @@ void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
     NompHandleError(diag::err_nomp_rparen_expected, Tok, *this, Pragma);
 }
 
+static Expr *ExprToICE(Expr *E, const ASTContext &AST, QualType QT,
+                       CastKind CK) {
+  if (IntegerLiteral *IL = dyn_cast_or_null<IntegerLiteral>(E)) {
+    // FIXME: If it is a Literal, use as is. Need to add checks for
+    // StringLiteral, FloatLiteral, etc.
+    return IL;
+  } else {
+    // If it is a Expr, do an ICE.
+    return ImplicitCastExpr::Create(AST, QT, CK, E, nullptr, VK_PRValue,
+                                    FPOptionsOverride());
+  }
+}
+
+//==============================================================================
+// Parse and generate calls for Nomp API functions
+//
 StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
@@ -215,15 +241,27 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
     return StmtEmpty();
   }
 
-  llvm::SmallVector<Expr *, 16> CallArgs;
-  ParseNompExprListUntilRParen(CallArgs, "init");
-  if (CallArgs.size() != 3) {
+  llvm::SmallVector<Expr *, 16> InitArgs;
+  // Parse everything till ")"
+  ParseNompExprListUntilRParen(InitArgs, "init");
+
+  // Check if we get the expected number of arguments.
+  if (InitArgs.size() != 2) {
     NompHandleError(diag::err_nomp_invalid_number_of_args, Tok, *this, "init");
     return StmtEmpty();
   }
 
+  // Conver Expr* to function arguments.
+  llvm::SmallVector<Expr *, 2> FuncArgs;
+  Expr *Argv = InitArgs.pop_back_val(), *Argc = InitArgs.pop_back_val();
+  FuncArgs.push_back(
+      ExprToICE(Argc, AST, getIntType(AST), CastKind::CK_LValueToRValue));
+  FuncArgs.push_back(
+      ExprToICE(Argv, AST, getIntType(AST), CastKind::CK_LValueToRValue));
+
   ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
-  return CreateCallExpr(AST, SL, ArrayRef<Expr *>(CallArgs),
+
+  return CreateCallExpr(AST, SL, ArrayRef<Expr *>(FuncArgs),
                         LibNompFuncs[NompInit]);
 }
 
@@ -510,9 +548,8 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
     if (T) {
       // Name of the variable as a string
       std::string name = V->getNameAsString();
-      QualType NameStrTy =
-          AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, name.size() + 1),
-                                   nullptr, ArrayType::Normal, 0);
+      QualType NameStrTy = getConstArrayType(AST, AST.CharTy, name.size() + 1,
+                                             ArrayType::Normal);
       StringLiteral *SL =
           StringLiteral::Create(AST, name, StringLiteral::Ordinary, false,
                                 NameStrTy, SourceLocation());
@@ -522,7 +559,8 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       FuncArgs.push_back(ICE);
 
       // type
-      int type = TypeInteger * T->isIntegerType() +
+      int type = TypeInt * T->isSignedIntegerType() +
+                 TypeUInt * T->isUnsignedIntegerType() +
                  TypeFloat * T->isFloatingType() +
                  TypePointer * (T->isPointerType() || T->isArrayType());
       // TODO: Throw an error
@@ -698,15 +736,13 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Stmts.push_back(
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
-  QualType StringTy = AST.getPointerType(AST.CharTy);
   QualType ConstCharTy = AST.getConstType(AST.CharTy);
   QualType ConstStringTy = AST.getPointerType(ConstCharTy);
 
-  // We will create `const char *knl[K] = "..."` variable to hold the kernel
+  // We will create `const char knl[K] = "..."` variable to hold the kernel
   D.clear();
   QualType KnlStrTy =
-      AST.getConstantArrayType(ConstCharTy, llvm::APInt(32, Knl.size() + 1),
-                               nullptr, ArrayType::Normal, 0);
+      getConstArrayType(AST, ConstCharTy, Knl.size() + 1, ArrayType::Normal);
   VarDecl *VKnl = VarDecl::Create(
       AST, S.CurContext, SL, SL, &AST.Idents.get("knl"), KnlStrTy,
       AST.getTrivialTypeSourceInfo(KnlStrTy), SC_None);
@@ -722,18 +758,17 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the decl for `const char *clauses[N] = {...}
   D.clear();
-  QualType ClausesStrTy = AST.getConstantArrayType(
-      ConstStringTy, llvm::APInt(32, clauses.size() + 1), nullptr,
-      ArrayType::Normal, 0);
+  QualType ClausesStrTy = getConstArrayType(
+      AST, ConstStringTy, clauses.size() + 1, ArrayType::Normal);
   VarDecl *CLS = VarDecl::Create(
       AST, S.CurContext, SL, SL, &AST.Idents.get("clauses"), ClausesStrTy,
       AST.getTrivialTypeSourceInfo(ClausesStrTy), SC_None);
 
+  QualType StringTy = AST.getPointerType(AST.CharTy);
   llvm::SmallVector<Expr *, 16> InitList;
   for (auto cls : clauses) {
     QualType ClauseTy =
-        AST.getConstantArrayType(AST.CharTy, llvm::APInt(32, cls.size() + 1),
-                                 nullptr, ArrayType::Normal, 0);
+        getConstArrayType(AST, AST.CharTy, cls.size() + 1, ArrayType::Normal);
     StringLiteral *L = StringLiteral::Create(
         AST, cls, StringLiteral::StringKind::Ordinary, false, ClauseTy, SL);
     ImplicitCastExpr *ICE0 =
