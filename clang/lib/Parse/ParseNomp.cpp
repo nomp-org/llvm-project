@@ -63,7 +63,7 @@ enum UpdateDirection {
   UpdateFree = 8
 };
 
-enum ArgType { TypeInt = 1, TypeFloat = 2, TypePointer = 4, TypeUInt = 8 };
+enum ArgType { TypeInt = 1, TypeFloat = 2, TypePointer = 4 };
 
 
 //==============================================================================
@@ -499,20 +499,20 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
   // 2nd argument is the kernel string (or the for loop) wrapped inside a
   // function.
-  QualType CharArrayTy1 = AST.getPointerType(AST.getConstType(AST.CharTy));
+  QualType CharPtrTy1 = AST.getPointerType(AST.getConstType(AST.CharTy));
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VKNL, false, SL,
                             VKNL->getType(), VK_LValue);
   FuncArgs.push_back(ImplicitCastExpr::Create(
-      AST, CharArrayTy1, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      AST, CharPtrTy1, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
   // 3rd argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
   // Currently, we support `transform`, `annotate` and `jit`
-  QualType CharArrayTy2 = AST.getPointerType(CharArrayTy1);
+  QualType CharPtrTy2 = AST.getPointerType(CharPtrTy1);
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VCLS, false, SL,
                             VCLS->getType(), VK_LValue);
   FuncArgs.push_back(ImplicitCastExpr::Create(
-      AST, CharArrayTy2, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
+      AST, CharPtrTy2, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
   Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
@@ -559,8 +559,7 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       FuncArgs.push_back(ICE);
 
       // type
-      int type = TypeInt * T->isSignedIntegerType() +
-                 TypeUInt * T->isUnsignedIntegerType() +
+      int type = TypeInt * T->isIntegerType() +
                  TypeFloat * T->isFloatingType() +
                  TypePointer * (T->isPointerType() || T->isArrayType());
       // TODO: Throw an error
