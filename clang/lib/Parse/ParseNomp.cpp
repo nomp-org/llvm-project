@@ -33,7 +33,8 @@ enum LibNompFunc {
   NompJit = 2,
   NompRun = 3,
   NompFinalize = 4,
-  NompErr = 5
+  NompSync = 5,
+  NompErr = 6
 };
 static FunctionDecl *LibNompFuncs[32] = {nullptr};
 
@@ -42,7 +43,8 @@ enum Directive {
   DirectiveInit = 0,
   DirectiveUpdate = 1,
   DirectiveFor = 2,
-  DirectiveFinalize = 3
+  DirectiveSync = 3,
+  DirectiveFinalize = 4
 };
 
 enum ForClause {
@@ -87,6 +89,7 @@ static inline LibNompFunc GetLibNompFunc(const llvm::StringRef name) {
       .Case("nomp_update", NompUpdate)
       .Case("nomp_jit", NompJit)
       .Case("nomp_run", NompRun)
+      .Case("nomp_sync", NompSync)
       .Case("nomp_finalize", NompFinalize)
       .Default(NompInvalid);
 }
@@ -96,6 +99,7 @@ static inline Directive GetDirective(const llvm::StringRef name) {
       .Case("init", DirectiveInit)
       .Case("update", DirectiveUpdate)
       .Case("for", DirectiveFor)
+      .Case("sync", DirectiveSync)
       .Case("finalize", DirectiveFinalize)
       .Default(DirectiveInvalid);
 }
@@ -805,6 +809,17 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
                               SL, SL);
 }
 
+StmtResult Parser::ParseNompSync(const SourceLocation &SL) {
+  ASTContext &AST = getActions().getASTContext();
+
+  if (!TryConsumeToken(tok::annot_pragma_nomp_end)) {
+    NompHandleError(diag::err_nomp_eod_expected, Tok, *this, "finalize");
+    return StmtEmpty();
+  }
+
+  return CreateCallExpr(AST, SL, ArrayRef<Expr *>(), LibNompFuncs[NompSync]);
+}
+
 StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
   ASTContext &AST = getActions().getASTContext();
 
@@ -840,6 +855,7 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   FindLibNompFuncDecl("nomp_update", S);
   FindLibNompFuncDecl("nomp_jit", S);
   FindLibNompFuncDecl("nomp_run", S);
+  FindLibNompFuncDecl("nomp_sync", S);
   FindLibNompFuncDecl("nomp_finalize", S);
 
   SourceLocation SL = Tok.getLocation();
@@ -869,6 +885,9 @@ StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
     break;
   case DirectiveFinalize:
     result = ParseNompFinalize(SL);
+    break;
+  case DirectiveSync:
+    result = ParseNompSync(SL);
     break;
   case DirectiveInvalid:
     NompHandleError(diag::err_nomp_invalid_directive, Tok, *this);
