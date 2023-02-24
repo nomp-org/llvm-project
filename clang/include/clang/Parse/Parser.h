@@ -3447,12 +3447,13 @@ private:
   Expr *ParseNompExpr();
   void ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &ExprList,
                                     llvm::StringRef Pragma);
+  StmtResult ParseNompDirective(ParsedStmtContext StmtCtx);
   StmtResult ParseNompInit(const SourceLocation &sLoc);
-  StmtResult ParseNompFinalize(const SourceLocation &sLoc);
   StmtResult ParseNompUpdate(const SourceLocation &sLoc);
   int ParseNompForClauses(std::vector<std::string> &clauses);
   StmtResult ParseNompFor(const SourceLocation &sLoc);
-  StmtResult ParseNompDirective(ParsedStmtContext StmtCtx);
+  StmtResult ParseNompSync(const SourceLocation &sLoc);
+  StmtResult ParseNompFinalize(const SourceLocation &sLoc);
 
 public:
   /// Parses simple expression in parens for single-expression clauses of OpenMP
