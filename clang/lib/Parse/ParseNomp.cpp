@@ -55,8 +55,8 @@ enum ForClause {
 };
 std::string ForClauses[3] = {"jit", "transform", "annotate"};
 
-// FIXME: Following two enums (UpdateDirection and ArgType) should be based
-// on `nomp.h` and sholdn't be hardcoded here.
+// FIXME: Following enum UpdateDirection should be based on `nomp.h` and
+// sholdn't be hardcoded here.
 enum UpdateDirection {
   UpdateInvalid = -1,
   UpdateAlloc = 1,
@@ -65,7 +65,14 @@ enum UpdateDirection {
   UpdateFree = 8
 };
 
-enum ArgType { TypeInt = 1, TypeFloat = 2, TypePointer = 4 };
+// FIXME: Following enum ArgType should be based on `nomp.h` and sholdn't be
+// hardcoded here.
+enum ArgType {
+  TypeInt = 2048,
+  TypeUint = 4096,
+  TypeFloat = 6144,
+  TypePointer = 8192
+};
 
 //==============================================================================
 // Helper functions to generate C types.
