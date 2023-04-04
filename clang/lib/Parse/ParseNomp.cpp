@@ -446,6 +446,14 @@ public:
 
   void VisitImplicitCastExpr(ImplicitCastExpr *E) { Visit(E->getSubExpr()); }
 
+  void VisitParenExpr(ParenExpr *E) { Visit(E->getSubExpr()); }
+
+  void VisitConditionalOperator(ConditionalOperator *E) {
+    Visit(E->getCond());
+    Visit(E->getLHS());
+    Visit(E->getRHS());
+  }
+
   void VisitDeclRefExpr(DeclRefExpr *DRE) {
     if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
       DRE_.insert(VD->getCanonicalDecl());
