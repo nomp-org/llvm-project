@@ -454,6 +454,13 @@ public:
     Visit(E->getRHS());
   }
 
+  void VisitIfStmt(IfStmt *S) {
+    Visit(S->getCond());
+    Visit(S->getThen());
+    if (S->hasElseStorage())
+      Visit(S->getElse());
+  }
+
   void VisitDeclRefExpr(DeclRefExpr *DRE) {
     if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
       DRE_.insert(VD->getCanonicalDecl());
