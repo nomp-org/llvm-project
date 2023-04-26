@@ -509,7 +509,7 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID, VarDecl *VKNL,
-                              VarDecl *VCLS) {
+                              VarDecl *VCLS, std::set<VarDecl *> EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
   SourceLocation SL = SourceLocation();
 
@@ -540,26 +540,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       AST, CharPtrTy2, CastKind::CK_ArrayToPointerDecay, DRE, nullptr,
       VK_PRValue, FPOptionsOverride()));
 
-  Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
-                                 ArrayRef<Expr *>(FuncArgs),
-                                 LibNompFuncs[NompJit]));
-}
-
-static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
-                              ASTContext &AST, VarDecl *ID,
-                              std::set<VarDecl *> EV) {
-  llvm::SmallVector<Expr *, 16> FuncArgs;
-
-  // First argument to nomp_run() is 'id' -- input argument which passes an
-  // unique id for each kernel.
-  DeclRefExpr *DRE =
-      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
-                          false, SourceLocation(), ID->getType(), VK_LValue);
-  FuncArgs.push_back(
-      ImplicitCastExpr::Create(AST, ID->getType(), CastKind::CK_LValueToRValue,
-                               DRE, nullptr, VK_PRValue, FPOptionsOverride()));
-
-  // Second argument to nomp_run() is 'nargs' -- total number of arguments to
+  // 4th argument to nomp_jit() is 'nargs' -- total number of arguments to
   // the kernel
   int nargs = EV.size();
   QualType IntTy = getIntType(AST);
@@ -583,17 +564,6 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                    nullptr, VK_PRValue, FPOptionsOverride());
       FuncArgs.push_back(ICE);
 
-      // type
-      int type = TypeInt * T->isIntegerType() +
-                 TypeFloat * T->isFloatingType() +
-                 TypePointer * (T->isPointerType() || T->isArrayType());
-      // TODO: Throw an error
-      // if (type == 0) {
-      //   NompHandleError(diag::err_nomp_identifier_expected, tok, P);
-      // }
-      FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, type),
-                                                IntTy, SourceLocation()));
-
       TypeSourceInfo *TSI;
       if (T->isArrayType()) {
         const auto *AT = dyn_cast<ArrayType>(T);
@@ -607,7 +577,45 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
           UETT_SizeOf, TSI, AST.getSizeType(), SourceLocation(),
           SourceLocation()));
+      
+      // type
+      int type = TypeInt * T->isIntegerType() +
+                 TypeFloat * T->isFloatingType() +
+                 TypePointer * (T->isPointerType() || T->isArrayType());
+      // TODO: Throw an error
+      // if (type == 0) {
+      //   NompHandleError(diag::err_nomp_identifier_expected, tok, P);
+      // }
 
+      FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, type),
+                                                IntTy, SourceLocation()));
+    }
+  }
+
+  Stmts.push_back(CreateCallExpr(AST, SourceLocation(),
+                                 ArrayRef<Expr *>(FuncArgs),
+                                 LibNompFuncs[NompJit]));
+}
+
+static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
+                              ASTContext &AST, VarDecl *ID,
+                              std::set<VarDecl *> EV) {
+  llvm::SmallVector<Expr *, 16> FuncArgs;
+
+  // First argument to nomp_run() is 'id' -- input argument which passes an
+  // unique id for each kernel.
+  DeclRefExpr *DRE =
+      DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
+                          false, SourceLocation(), ID->getType(), VK_LValue);
+  FuncArgs.push_back(
+      ImplicitCastExpr::Create(AST, ID->getType(), CastKind::CK_LValueToRValue,
+                               DRE, nullptr, VK_PRValue, FPOptionsOverride()));
+
+  QualType StrTy = AST.getPointerType(AST.CharTy);
+  for (auto V : EV) {
+    QualType QT = V->getType();
+    const Type *T = QT.getTypePtrOrNull();
+    if (T) {
       // Pointer to variable
       DeclRefExpr *DRE =
           DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
@@ -822,7 +830,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS);
+  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS, EV);
 
   // Next we create AST node for nomp_run().
   CreateNompRunCall(Stmts, AST, ID, EV);
