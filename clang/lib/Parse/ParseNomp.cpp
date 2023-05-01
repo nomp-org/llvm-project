@@ -143,6 +143,19 @@ static inline void NompHandleError(unsigned DiagID, Token &Tok, Parser &P,
   P.SkipUntil(tok::annot_pragma_nomp_end);
 }
 
+static inline void NompHandleError(unsigned DiagID, SourceLocation SL,
+                                   ASTContext &AST,
+                                   llvm::StringRef Arg = StringRef()) {
+  SourceManager &SM = AST.getSourceManager();
+  FullSourceLoc loc(SL, SM);
+  if (Arg.empty())
+    AST.getDiagnostics().Report(loc, DiagID)
+        << loc.getLineNumber() << loc.getColumnNumber();
+  else
+    AST.getDiagnostics().Report(loc, DiagID)
+        << Arg << loc.getLineNumber() << loc.getColumnNumber();
+}
+
 //==============================================================================
 // Helper functions: Tokens to Clang Stmt conversions
 //
@@ -509,7 +522,7 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID, VarDecl *VKNL,
-                              VarDecl *VCLS, std::set<VarDecl *> EV) {
+                              VarDecl *VCLS, std::set<VarDecl *> &EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
   SourceLocation SL = SourceLocation();
 
@@ -577,15 +590,17 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
           UETT_SizeOf, TSI, AST.getSizeType(), SourceLocation(),
           SourceLocation()));
-      
+
       // type
-      int type = TypeInt * T->isIntegerType() +
+      int type = TypeInt * T->isSignedIntegerType() +
                  TypeFloat * T->isFloatingType() +
+                 TypeUint * T->isUnsignedIntegerType() +
                  TypePointer * (T->isPointerType() || T->isArrayType());
-      // TODO: Throw an error
-      // if (type == 0) {
-      //   NompHandleError(diag::err_nomp_identifier_expected, tok, P);
-      // }
+
+      if (type == 0) {
+        NompHandleError(diag::err_nomp_function_arg_invalid, V->getLocation(),
+                        AST);
+      }
 
       FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, type),
                                                 IntTy, SourceLocation()));
@@ -599,7 +614,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
 static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID,
-                              std::set<VarDecl *> EV) {
+                              std::set<VarDecl *> &EV) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
   // First argument to nomp_run() is 'id' -- input argument which passes an
@@ -611,7 +626,6 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       ImplicitCastExpr::Create(AST, ID->getType(), CastKind::CK_LValueToRValue,
                                DRE, nullptr, VK_PRValue, FPOptionsOverride()));
 
-  QualType StrTy = AST.getPointerType(AST.CharTy);
   for (auto V : EV) {
     QualType QT = V->getType();
     const Type *T = QT.getTypePtrOrNull();

@@ -1527,6 +1527,8 @@ def err_nomp_eod_expected: Error<
   "Expected the end of directive '%0' at line %1, column %2">;
 def err_nomp_identifier_expected: Error<
   "Expected a variable name at line %0, column %1">;
+def err_nomp_function_arg_invalid: Error<
+  "Invalid argument type at line %0, column %1">;
 def err_nomp_pointer_type_expected: Error<
   "Expected a pointer in the nomp directive '%0' at line %1, column %2">;
 def err_nomp_for_expected: Error<
