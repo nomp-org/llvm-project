@@ -51,12 +51,13 @@ enum ForClause {
   ForClauseInvalid = -1,
   ForClauseJit = 0,
   ForClauseTransform = 1,
-  ForClauseAnnotate = 2
+  ForClauseAnnotate = 2,
+  ForClauseReduce = 3
 };
-std::string ForClauses[3] = {"jit", "transform", "annotate"};
+std::string ForClauses[4] = {"jit", "transform", "annotate", "reduce"};
 
 // FIXME: Following enum UpdateDirection should be based on `nomp.h` and
-// sholdn't be hardcoded here.
+// shouldn't be hard-coded here.
 enum UpdateDirection {
   UpdateInvalid = -1,
   UpdateAlloc = 1,
@@ -65,11 +66,11 @@ enum UpdateDirection {
   UpdateFree = 8
 };
 
-// FIXME: Following enum ArgType should be based on `nomp.h` and sholdn't be
-// hardcoded here.
+// FIXME: Following enum ArgType should be based on `nomp.h` and shouldn't be
+// hard-coded here.
 enum ArgType {
   TypeInt = 2048,
-  TypeUint = 4096,
+  TypeUInt = 4096,
   TypeFloat = 6144,
   TypePointer = 8192
 };
@@ -125,6 +126,7 @@ static inline ForClause GetForClause(const llvm::StringRef pragma) {
       .Case("jit", ForClauseJit)
       .Case("transform", ForClauseTransform)
       .Case("annotate", ForClauseAnnotate)
+      .Case("reduce", ForClauseReduce)
       .Default(ForClauseInvalid);
 }
 
@@ -166,9 +168,9 @@ static VarDecl *LookupVarDecl(Token &tok, Parser &P) {
     // If the token is not an identifier, it is an error
     NompHandleError(diag::err_nomp_identifier_expected, tok, P);
   } else {
-    // Check for the declation of the identifier in current scope and
+    // Check for the declaration of the identifier in current scope and
     // If not found, check on the translation Unit scope. If not found
-    // in thre either, it's an error.
+    // in there either, it's an error.
     DeclarationName DN = DeclarationName(tok.getIdentifierInfo());
     VarDecl *VD = dyn_cast_or_null<VarDecl>(
         S.LookupSingleName(P.getCurScope(), DN, SourceLocation(),
@@ -522,7 +524,8 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID, VarDecl *VKNL,
-                              VarDecl *VCLS, std::set<VarDecl *> &EV) {
+                              VarDecl *VCLS, std::set<VarDecl *> &EV,
+                              const std::vector<std::string> &reductions) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
   SourceLocation SL = SourceLocation();
 
@@ -545,7 +548,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
       VK_PRValue, FPOptionsOverride()));
 
   // 3rd argument is the auxiliary pragmas nomp allow after `#pragma nomp for`
-  // Currently, we support `transform`, `annotate` and `jit`
+  // Currently, we support `transform`, `annotate` and `reduce`.
   QualType CharPtrTy2 = AST.getPointerType(CharPtrTy1);
   DRE = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SL, VCLS, false, SL,
                             VCLS->getType(), VK_LValue);
@@ -565,7 +568,7 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
     QualType QT = V->getType();
     const Type *T = QT.getTypePtrOrNull();
     if (T) {
-      // Name of the variable as a string
+      // Name of the variable as a string.
       std::string name = V->getNameAsString();
       QualType NameStrTy = getConstantArrayType(
           AST, AST.CharTy, name.size() + 1, ArrayType::Normal);
@@ -577,25 +580,29 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                    nullptr, VK_PRValue, FPOptionsOverride());
       FuncArgs.push_back(ICE);
 
-      TypeSourceInfo *TSI;
-      if (T->isArrayType()) {
-        const auto *AT = dyn_cast<ArrayType>(T);
-        QualType QAT = AT->getElementType();
-        TSI = AST.getTrivialTypeSourceInfo(QAT);
-      } else {
-        TSI = AST.getTrivialTypeSourceInfo(QT);
-      }
+      if (T->isArrayType())
+        QT = AST.getBaseElementType(dyn_cast<ArrayType>(T));
+      else if (T->isPointerType())
+        QT = dyn_cast<PointerType>(T)->getPointeeType();
+      TypeSourceInfo *TSI = AST.getTrivialTypeSourceInfo(QT);
 
       // sizeof(variable)
       FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
           UETT_SizeOf, TSI, AST.getSizeType(), SourceLocation(),
           SourceLocation()));
 
-      // type
-      int type = TypeInt * T->isSignedIntegerType() +
-                 TypeFloat * T->isFloatingType() +
-                 TypeUint * T->isUnsignedIntegerType() +
-                 TypePointer * (T->isPointerType() || T->isArrayType());
+      Type *T1 = const_cast<Type *>(T);
+      // Check if the variable is part of a reduction since we need to pass the
+      // pointee type or base element type in that case.
+      if (std::find(reductions.begin(), reductions.end(), name) !=
+          reductions.end())
+        T1 = const_cast<Type *>(QT.getTypePtrOrNull());
+
+      // Find the nomp type.
+      int type = TypeInt * T1->isSignedIntegerType() +
+                 TypeFloat * T1->isFloatingType() +
+                 TypeUInt * T1->isUnsignedIntegerType() +
+                 TypePointer * (T1->isPointerType() || T1->isArrayType());
 
       if (type == 0) {
         NompHandleError(diag::err_nomp_function_arg_invalid, V->getLocation(),
@@ -651,11 +658,12 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                  LibNompFuncs[NompRun]));
 }
 
-int Parser::ParseNompForClauses(std::vector<std::string> &clauses) {
+int Parser::ParseNompForClauses(std::vector<std::string> &clauses,
+                                std::vector<std::string> &reductions) {
   // Process auxiliary pragmas (i.e., clauses) supported after `#pragma nomp
-  // for`. Mainly we want to support `annotate`, `tranform` and `jit` for the
+  // for`. Mainly we want to support `annotate`, `transform` and `jit` for the
   // time being. All of the above should be parsed as an identifier token.
-  unsigned transformDetected = 0;
+  unsigned transformDetected = 0, reductionDetected = 0;
   while (Tok.isNot(tok::annot_pragma_nomp_end)) {
     ForClause clause = ForClauseInvalid;
     if (Tok.is(tok::identifier)) {
@@ -678,6 +686,12 @@ int Parser::ParseNompForClauses(std::vector<std::string> &clauses) {
       NompHandleError(diag::err_nomp_repeated_transform_clause, Tok, *this);
       return 1;
     }
+    // `reduce` can only be present once -- if there are two reduce
+    // clauses, it is an error.
+    if (reductionDetected && clause == ForClauseReduce) {
+      NompHandleError(diag::err_nomp_repeated_reduction_clause, Tok, *this);
+      return 1;
+    }
 
     // Consume the clause and the following "(".
     ConsumeToken();
@@ -687,10 +701,10 @@ int Parser::ParseNompForClauses(std::vector<std::string> &clauses) {
       return 1;
     }
 
-    // `transform` and `annotate` take key-value pairs. `jit` takes a variable
-    // ame. In any case, we should get a string literal next.
-    // FIXME: This can be a string variable as well. Need to add the support for
-    // that.
+    // `transform`, `annotate` and `reduce should be followed by two arguments.
+    // `jit` takes a variable name. In any case, we should get a string
+    // literal next. FIXME: This can be a string variable as well. Need to add
+    // support for that.
     if (Tok.isNot(tok::string_literal)) {
       NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
       return 1;
@@ -701,14 +715,17 @@ int Parser::ParseNompForClauses(std::vector<std::string> &clauses) {
     std::string SL0 =
         std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
     clauses.push_back(SL0);
+    if (clause == ForClauseReduce)
+      reductions.push_back(SL0);
 
     ConsumeToken();
 
-    // If we are handling an `annotate` and `transform` clauses, we should
-    // expect one more string literal after a comma.
-    // FIXME: This can be a string variable as well. Need to add the support for
-    // that.
-    if (clause == ForClauseAnnotate || clause == ForClauseTransform) {
+    // If we are handling an `annotate`, `transform` or `reduce` clause, we
+    // should expect one more string literal after a comma. FIXME: This can be
+    // a string variable as well. Need to add support for that. In case of a
+    // reduction, this should be just "+" without double quotations.
+    if (clause == ForClauseAnnotate || clause == ForClauseTransform ||
+        clause == ForClauseReduce) {
       if (!TryConsumeToken(tok::comma)) {
         NompHandleError(diag::err_nomp_comma_expected, Tok, *this);
         return 1;
@@ -743,12 +760,11 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
 
-  std::vector<std::string> clauses;
-  if (ParseNompForClauses(clauses))
+  std::vector<std::string> clauses, reductions;
+  if (ParseNompForClauses(clauses, reductions))
     return StmtEmpty();
 
-  // Check if the next token is tok::kw_for. If not, exit. We should skip
-  // comments if they exist -- but not doing it right now. TODO for future.
+  // Check if the next token is tok::kw_for. If not, exit.
   if (Tok.isNot(tok::kw_for)) {
     NompHandleError(diag::err_nomp_for_expected, Tok, *this, "for");
     return StmtEmpty();
@@ -843,8 +859,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
       new (AST) DeclStmt(DeclGroupRef::Create(AST, D.begin(), 1), SL, SL));
 
   // Next we create the AST node for the function call nomp_jit(). To do that
-  // we create the func args to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS, EV);
+  // we create the function arguments to nomp_jit().
+  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS, EV, reductions);
 
   // Next we create AST node for nomp_run().
   CreateNompRunCall(Stmts, AST, ID, EV);
