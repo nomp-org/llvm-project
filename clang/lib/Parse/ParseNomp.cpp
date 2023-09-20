@@ -576,7 +576,7 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
   ExtVars.GetExternalVarDecls(EV);
 
   clang::PrintingPolicy Policy(Opts);
-  Policy.SuppressInitializers = true;
+  Policy.SuppressInitializers = false;
   Policy.PrintCanonicalTypes = true;
 
   llvm::raw_string_ostream KnlStream(KnlStr);
