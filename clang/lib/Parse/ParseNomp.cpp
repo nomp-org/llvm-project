@@ -577,6 +577,7 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
 
   clang::PrintingPolicy Policy(Opts);
   Policy.SuppressInitializers = true;
+  Policy.PrintCanonicalTypes = true;
 
   llvm::raw_string_ostream KnlStream(KnlStr);
   KnlStream << "void " << KnlName << "(";
@@ -592,12 +593,8 @@ static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
   }
   KnlStream << " {\n";
 
-  SourceLocation BL = FS->getBeginLoc(), EL = FS->getEndLoc();
-  llvm::StringRef bfr = SM.getBufferData(SM.getFileID(BL));
-  unsigned s = SM.getFileOffset(BL), e = SM.getFileOffset(EL), n = e;
-  for (; n < bfr.size() && bfr[n] != ';' && bfr[n] != '}'; n++)
-    ;
-  KnlStream << std::string(bfr.data() + s, n - s + 2) << "}";
+  FS->printPretty(KnlStream, nullptr, Policy, 0);
+  KnlStream << "}";
 }
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
