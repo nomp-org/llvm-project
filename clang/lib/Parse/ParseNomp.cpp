@@ -155,7 +155,7 @@ static inline void NompHandleError(unsigned DiagID, SourceLocation SL,
         << loc.getLineNumber() << loc.getColumnNumber();
   else
     AST.getDiagnostics().Report(loc, DiagID)
-        << Arg << loc.getLineNumber() << loc.getColumnNumber();
+        << loc.getLineNumber() << loc.getColumnNumber() << Arg;
 }
 
 //==============================================================================
@@ -240,17 +240,97 @@ void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
     NompHandleError(diag::err_nomp_rparen_expected, Tok, *this, Pragma);
 }
 
-static Expr *ExprToICE(Expr *E, const ASTContext &AST, QualType QT,
-                       CastKind CK) {
-  if (IntegerLiteral *IL = dyn_cast_or_null<IntegerLiteral>(E)) {
-    // FIXME: If it is a Literal, use as is. Need to add checks for
-    // StringLiteral, FloatLiteral, etc.
-    return IL;
+static Expr *ExprToArgc(Expr *E, ASTContext &AST) {
+  const Type *T = E->getType().getTypePtr();
+  if (!T->isIntegerType() && !T->isFloatingType()) {
+    NompHandleError(diag::err_nomp_function_arg_invalid, E->getExprLoc(), AST,
+                    "Parameter `argc` of nomp_init() must be an Integer type.");
+    return nullptr;
+  }
+
+  QualType QT = getIntType(AST);
+  Expr *Argc = nullptr;
+
+  // If this is a DRE, we need to do LValueToRvalue cast. Otherwise, we just
+  // set the Argc to E.
+  if (DeclRefExpr *DRE = dyn_cast_or_null<DeclRefExpr>(E)) {
+    Argc = ImplicitCastExpr::Create(
+        AST, DRE->getType(), CastKind::CK_LValueToRValue, DRE, nullptr,
+        ExprValueKind::VK_PRValue, FPOptionsOverride());
   } else {
-    // If it is a Expr, do an ICE.
-    return ImplicitCastExpr::Create(AST, QT, CK, E, nullptr, VK_PRValue,
+    Argc = E;
+  }
+
+  // If this is a floating type, we need to do FloatingToIntegral cast.
+  if (T->isFloatingType()) {
+    Argc = ImplicitCastExpr::Create(AST, QT, CastKind::CK_FloatingToIntegral,
+                                    Argc, nullptr, ExprValueKind::VK_PRValue,
                                     FPOptionsOverride());
   }
+
+  return Argc;
+}
+
+static Expr *ExprToArgv(Expr *E, ASTContext &AST) {
+#define check_cond(cond)                                                       \
+  {                                                                            \
+    if (!cond) {                                                               \
+      NompHandleError(diag::err_nomp_function_arg_invalid, E->getExprLoc(),    \
+                      AST,                                                     \
+                      "Parameter `argv` of nomp_init() must be an variable "   \
+                      "which reference an array of C-strings or "              \
+                      "pointer to an array of C-strings.");                    \
+      return nullptr;                                                          \
+    }                                                                          \
+  }
+
+  // We should have a variable pointing to array of C-strings or a pointer to
+  // an array of C-strings as the argv.
+
+  // So, we first check if this is a DeclRefExpr since we are only accepting
+  // variables to pointer or array types.
+  bool isa_variable = false;
+  if (DeclRefExpr *DRE = dyn_cast_or_null<DeclRefExpr>(E)) {
+    // If this is a DeclRefExpr, we need to check if it is a variable.
+    if (isa<VarDecl>(DRE->getDecl()))
+      isa_variable = true;
+  }
+  check_cond(isa_variable);
+
+  // Then, check if it is a variable of an array or a pointer type.
+  bool isa_array_or_pointer = false;
+  const Type *T = E->getType().getTypePtr();
+  if (T->isPointerType() || T->isArrayType())
+    isa_array_or_pointer = true;
+  check_cond(isa_array_or_pointer);
+
+  // If it is an array or a pointer, then we check if the base type is a
+  // C-string.
+  bool isa_cstring = false;
+  const Type *B = T->getPointeeOrArrayElementType();
+  if (B->isPointerType() && B->getPointeeType()->isCharType())
+    isa_cstring = true;
+  check_cond(isa_cstring);
+
+  QualType QT = AST.getPointerType(AST.getConstType(AST.CharTy));
+  QT = AST.getPointerType(QT);
+  // If this is an array, we need to do ArrayToPointerDecay cast.
+  if (T->isArrayType()) {
+    return ImplicitCastExpr::Create(AST, QT, CastKind::CK_ArrayToPointerDecay,
+                                    E, nullptr, ExprValueKind::VK_PRValue,
+                                    FPOptionsOverride());
+  }
+
+  // If this is a pointer type, we do an LValueToRValue cast.
+  if (T->isPointerType()) {
+    return ImplicitCastExpr::Create(AST, QT, CastKind::CK_LValueToRValue, E,
+                                    nullptr, ExprValueKind::VK_PRValue,
+                                    FPOptionsOverride());
+  }
+
+  return nullptr;
+
+#undef check_cond
 }
 
 //==============================================================================
@@ -279,10 +359,8 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
   // Conver Expr* to function arguments.
   llvm::SmallVector<Expr *, 2> FuncArgs;
   Expr *Argv = InitArgs.pop_back_val(), *Argc = InitArgs.pop_back_val();
-  FuncArgs.push_back(
-      ExprToICE(Argc, AST, getIntType(AST), CastKind::CK_LValueToRValue));
-  FuncArgs.push_back(
-      ExprToICE(Argv, AST, getIntType(AST), CastKind::CK_LValueToRValue));
+  FuncArgs.push_back(ExprToArgc(Argc, AST));
+  FuncArgs.push_back(ExprToArgv(Argv, AST));
 
   ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
 
