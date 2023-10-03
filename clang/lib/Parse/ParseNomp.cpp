@@ -494,11 +494,12 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 }
 
 namespace {
-class ExternalVarRefFinder final : public StmtVisitor<ExternalVarRefFinder> {
+class ExternalVariableFinder final
+    : public StmtVisitor<ExternalVariableFinder, void> {
   std::set<VarDecl *> VD_, DRE_;
 
 public:
-  ExternalVarRefFinder() {}
+  ExternalVariableFinder(ForStmt *FS) { VisitForStmt(FS); }
 
   void VisitCompoundStmt(CompoundStmt *S) {
     for (auto *B : S->body())
@@ -521,11 +522,14 @@ public:
   }
 
   void VisitDecl(Decl *D) {
-    if (auto *VD = dyn_cast<VarDecl>(D)) {
-      VD_.insert(VD->getCanonicalDecl());
-      if (VD->hasInit())
-        Visit(VD->getInit());
-    }
+    if (auto *VD = dyn_cast<VarDecl>(D))
+      VisitVarDecl(VD);
+  }
+
+  void VisitVarDecl(VarDecl *VD) {
+    VD_.insert(VD->getCanonicalDecl());
+    if (VD->hasInit())
+      Visit(VD->getInit());
   }
 
   void VisitBinaryOperator(BinaryOperator *O) {
@@ -564,14 +568,10 @@ public:
     std::set_difference(DRE_.begin(), DRE_.end(), VD_.begin(), VD_.end(),
                         std::inserter(VDS, VDS.begin()));
   }
-};
-} // namespace
+}; // ExternalVariableFinder
 
-static void GetExternalVariables(std::set<VarDecl *> &EV, ForStmt *FS) {
-  ExternalVarRefFinder ExtVars;
-  ExtVars.VisitForStmt(FS);
-  ExtVars.GetExternalVarDecls(EV);
-}
+
+} // namespace
 
 static void GetKernel(std::string &KnlStr, const std::string &KnlName,
                       const std::set<VarDecl *> &EV, const ForStmt *FS,
@@ -850,7 +850,8 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
 
   std::set<VarDecl *> EV;
-  GetExternalVariables(EV, FS);
+  ExternalVariableFinder EVF(FS);
+  EVF.GetExternalVarDecls(EV);
 
   std::string Knl;
   GetKernel(Knl, "loopy_kernel", EV, FS, AST.getLangOpts());
