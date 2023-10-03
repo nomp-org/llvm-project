@@ -112,8 +112,9 @@ static inline Directive GetDirective(const llvm::StringRef name) {
       .Default(DirectiveInvalid);
 }
 
-static inline UpdateDirection GetUpdateDirection(const llvm::StringRef dirn) {
-  return llvm::StringSwitch<UpdateDirection>(dirn)
+static inline UpdateDirection
+GetUpdateDirection(const llvm::StringRef direction) {
+  return llvm::StringSwitch<UpdateDirection>(direction)
       .Case("to", UpdateTo)
       .Case("from", UpdateFrom)
       .Case("alloc", UpdateAlloc)
@@ -566,15 +567,15 @@ public:
 };
 } // namespace
 
-static void GetExtVarsAndKnl(std::set<VarDecl *> &EV, std::string &KnlStr,
-                             const std::string &KnlName, ForStmt *FS,
-                             const SourceManager &SM,
-                             const clang::LangOptions &Opts) {
-  // Find the External VarDecls in the for loop
+static void GetExternalVariables(std::set<VarDecl *> &EV, ForStmt *FS) {
   ExternalVarRefFinder ExtVars;
   ExtVars.VisitForStmt(FS);
   ExtVars.GetExternalVarDecls(EV);
+}
 
+static void GetKernel(std::string &KnlStr, const std::string &KnlName,
+                      const std::set<VarDecl *> &EV, const ForStmt *FS,
+                      const clang::LangOptions &Opts) {
   clang::PrintingPolicy Policy(Opts);
   Policy.SuppressInitializers = false;
   Policy.PrintCanonicalTypes = true;
@@ -849,9 +850,10 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
 
   std::set<VarDecl *> EV;
+  GetExternalVariables(EV, FS);
+
   std::string Knl;
-  GetExtVarsAndKnl(EV, Knl, "loopy_kernel", FS,
-                   getPreprocessor().getSourceManager(), AST.getLangOpts());
+  GetKernel(Knl, "loopy_kernel", EV, FS, AST.getLangOpts());
 
   // We are going to create all our statements (declarations, function calls)
   // into the following vector and then create a compound statement out of it.
