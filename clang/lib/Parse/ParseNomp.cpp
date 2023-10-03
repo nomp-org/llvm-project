@@ -201,7 +201,7 @@ static CallExpr *CreateCallExpr(const ASTContext &AST, const SourceLocation &SL,
                           ExprValueKind::VK_PRValue, SL, FPOptionsOverride());
 }
 
-static bool FindLibNompFuncDecl(llvm::StringRef LNF, Sema &S) {
+static bool FindLibNompFunctionDecl(llvm::StringRef LNF, Sema &S) {
   LibNompFunc FN = GetLibNompFunc(LNF);
   if (FN == NompInvalid)
     return false;
@@ -989,12 +989,12 @@ StmtResult Parser::ParseNompFinalize(const SourceLocation &SL) {
 StmtResult Parser::ParseNompDirective(ParsedStmtContext StmtCtx) {
   // Fill the libnomp function declaration array: LibNompFuncs
   Sema &S = getActions();
-  FindLibNompFuncDecl("nomp_init", S);
-  FindLibNompFuncDecl("nomp_update", S);
-  FindLibNompFuncDecl("nomp_jit", S);
-  FindLibNompFuncDecl("nomp_run", S);
-  FindLibNompFuncDecl("nomp_sync", S);
-  FindLibNompFuncDecl("nomp_finalize", S);
+  FindLibNompFunctionDecl("nomp_init", S);
+  FindLibNompFunctionDecl("nomp_update", S);
+  FindLibNompFunctionDecl("nomp_jit", S);
+  FindLibNompFunctionDecl("nomp_run", S);
+  FindLibNompFunctionDecl("nomp_sync", S);
+  FindLibNompFunctionDecl("nomp_finalize", S);
 
   SourceLocation SL = Tok.getLocation();
   // tok::annot_pragma_nomp
