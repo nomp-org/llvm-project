@@ -490,82 +490,6 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 }
 
 namespace {
-class ExternalVariableFinder final
-    : public StmtVisitor<ExternalVariableFinder, void> {
-  std::set<VarDecl *> VD_, DRE_;
-
-public:
-  ExternalVariableFinder(ForStmt *FS) { VisitForStmt(FS); }
-
-  void VisitCompoundStmt(CompoundStmt *S) {
-    for (auto *B : S->body())
-      Visit(B);
-  }
-
-  void VisitForStmt(ForStmt *S) {
-    if (S->getInit())
-      Visit(S->getInit());
-    if (S->getCond())
-      Visit(S->getCond());
-    if (S->getInc())
-      Visit(S->getInc());
-    Visit(S->getBody());
-  }
-
-  void VisitDeclStmt(DeclStmt *S) {
-    for (auto D : S->decls())
-      VisitDecl(D);
-  }
-
-  void VisitDecl(Decl *D) {
-    if (auto *VD = dyn_cast<VarDecl>(D))
-      VisitVarDecl(VD);
-  }
-
-  void VisitVarDecl(VarDecl *VD) {
-    VD_.insert(VD->getCanonicalDecl());
-    if (VD->hasInit())
-      Visit(VD->getInit());
-  }
-
-  void VisitBinaryOperator(BinaryOperator *O) {
-    Visit(O->getLHS());
-    Visit(O->getRHS());
-  }
-
-  void VisitArraySubscriptExpr(ArraySubscriptExpr *E) {
-    Visit(E->getLHS());
-    Visit(E->getRHS());
-  }
-
-  void VisitImplicitCastExpr(ImplicitCastExpr *E) { Visit(E->getSubExpr()); }
-
-  void VisitParenExpr(ParenExpr *E) { Visit(E->getSubExpr()); }
-
-  void VisitConditionalOperator(ConditionalOperator *E) {
-    Visit(E->getCond());
-    Visit(E->getLHS());
-    Visit(E->getRHS());
-  }
-
-  void VisitIfStmt(IfStmt *S) {
-    Visit(S->getCond());
-    Visit(S->getThen());
-    if (S->hasElseStorage())
-      Visit(S->getElse());
-  }
-
-  void VisitDeclRefExpr(DeclRefExpr *DRE) {
-    if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
-      DRE_.insert(VD->getCanonicalDecl());
-  }
-
-  void GetExternalVarDecls(std::set<VarDecl *> &VDS) {
-    std::set_difference(DRE_.begin(), DRE_.end(), VD_.begin(), VD_.end(),
-                        std::inserter(VDS, VDS.begin()));
-  }
-}; // ExternalVariableFinder
-
 class PreprocessVisitor final : public StmtVisitor<PreprocessVisitor, void> {
   std::set<VarDecl *> VD_, DRE_;
   std::set<std::string> Names_;
@@ -936,9 +860,11 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   // Parse the for statement
   ForStmt *FS = ParseForStatement(nullptr).getAs<ForStmt>();
 
+  // Do some checks and preprocessing on the for statement.
+  PreprocessVisitor PPV(FS);
+
   std::set<VarDecl *> EV;
-  ExternalVariableFinder EVF(FS);
-  EVF.GetExternalVarDecls(EV);
+  PPV.GetExternalVarDecls(EV);
 
   std::string Knl;
   GetKernel(Knl, "loopy_kernel", EV, FS, AST.getLangOpts());
