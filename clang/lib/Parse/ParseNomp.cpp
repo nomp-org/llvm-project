@@ -91,8 +91,8 @@ static inline QualType getConstantArrayType(const ASTContext &AST,
 //==============================================================================
 // Helper functions for string to nomp type conversion
 //
-static inline LibNompFunc GetLibNompFunc(const llvm::StringRef name) {
-  return llvm::StringSwitch<LibNompFunc>(name)
+static inline LibNompFunc GetLibNompFunc(const llvm::StringRef Name) {
+  return llvm::StringSwitch<LibNompFunc>(Name)
       .Case("nomp_init", NompInit)
       .Case("nomp_update", NompUpdate)
       .Case("nomp_jit", NompJit)
@@ -102,8 +102,8 @@ static inline LibNompFunc GetLibNompFunc(const llvm::StringRef name) {
       .Default(NompInvalid);
 }
 
-static inline Directive GetDirective(const llvm::StringRef name) {
-  return llvm::StringSwitch<Directive>(name)
+static inline Directive GetDirective(const llvm::StringRef Name) {
+  return llvm::StringSwitch<Directive>(Name)
       .Case("init", DirectiveInit)
       .Case("update", DirectiveUpdate)
       .Case("for", DirectiveFor)
@@ -112,9 +112,11 @@ static inline Directive GetDirective(const llvm::StringRef name) {
       .Default(DirectiveInvalid);
 }
 
-static inline UpdateDirection
-GetUpdateDirection(const llvm::StringRef direction) {
-  return llvm::StringSwitch<UpdateDirection>(direction)
+static inline UpdateDirection GetUpdateDirection(const Token &Tok) {
+  if (Tok.isNot(tok::identifier))
+    return UpdateInvalid;
+
+  return llvm::StringSwitch<UpdateDirection>(Tok.getIdentifierInfo()->getName())
       .Case("to", UpdateTo)
       .Case("from", UpdateFrom)
       .Case("alloc", UpdateAlloc)
@@ -122,8 +124,8 @@ GetUpdateDirection(const llvm::StringRef direction) {
       .Default(UpdateInvalid);
 }
 
-static inline ForClause GetForClause(const llvm::StringRef pragma) {
-  return llvm::StringSwitch<ForClause>(pragma)
+static inline ForClause GetForClause(const llvm::StringRef Pragma) {
+  return llvm::StringSwitch<ForClause>(Pragma)
       .Case("jit", ForClauseJit)
       .Case("transform", ForClauseTransform)
       .Case("annotate", ForClauseAnnotate)
@@ -138,11 +140,11 @@ static inline void NompHandleError(unsigned DiagID, Token &Tok, Parser &P,
                                    llvm::StringRef Arg = StringRef()) {
   Preprocessor &PP = P.getPreprocessor();
   SourceManager &SM = PP.getSourceManager();
-  FullSourceLoc loc(Tok.getLocation(), SM);
+  FullSourceLoc Loc(Tok.getLocation(), SM);
   if (Arg.empty())
-    PP.Diag(Tok, DiagID) << loc.getLineNumber() << loc.getColumnNumber();
+    PP.Diag(Tok, DiagID) << Loc.getLineNumber() << Loc.getColumnNumber();
   else
-    PP.Diag(Tok, DiagID) << Arg << loc.getLineNumber() << loc.getColumnNumber();
+    PP.Diag(Tok, DiagID) << Arg << Loc.getLineNumber() << Loc.getColumnNumber();
   P.SkipUntil(tok::annot_pragma_nomp_end);
 }
 
@@ -150,13 +152,13 @@ static inline void NompHandleError(unsigned DiagID, SourceLocation SL,
                                    ASTContext &AST,
                                    llvm::StringRef Arg = StringRef()) {
   SourceManager &SM = AST.getSourceManager();
-  FullSourceLoc loc(SL, SM);
+  FullSourceLoc Loc(SL, SM);
   if (Arg.empty())
-    AST.getDiagnostics().Report(loc, DiagID)
-        << loc.getLineNumber() << loc.getColumnNumber();
+    AST.getDiagnostics().Report(Loc, DiagID)
+        << Loc.getLineNumber() << Loc.getColumnNumber();
   else
-    AST.getDiagnostics().Report(loc, DiagID)
-        << loc.getLineNumber() << loc.getColumnNumber() << Arg;
+    AST.getDiagnostics().Report(Loc, DiagID)
+        << Loc.getLineNumber() << Loc.getColumnNumber() << Arg;
 }
 
 //==============================================================================
@@ -168,22 +170,22 @@ static VarDecl *LookupVarDecl(Token &tok, Parser &P) {
   if (TK != tok::identifier) {
     // If the token is not an identifier, it is an error
     NompHandleError(diag::err_nomp_identifier_expected, tok, P);
-  } else {
-    // Check for the declaration of the identifier in current scope and
-    // If not found, check on the translation Unit scope. If not found
-    // in there either, it's an error.
-    DeclarationName DN = DeclarationName(tok.getIdentifierInfo());
-    VarDecl *VD = dyn_cast_or_null<VarDecl>(
-        S.LookupSingleName(P.getCurScope(), DN, SourceLocation(),
-                           Sema::LookupNameKind::LookupOrdinaryName));
-    if (!VD)
-      VD = dyn_cast_or_null<VarDecl>(
-          S.LookupSingleName(S.TUScope, DN, SourceLocation(),
-                             Sema::LookupNameKind::LookupOrdinaryName));
-    if (VD)
-      return VD;
+    return nullptr;
   }
-  return nullptr;
+
+  // Check for the declaration of the identifier in current scope and
+  // If not found, check on the translation Unit scope. If still not found,
+  // it's an error.
+  DeclarationName DN = DeclarationName(tok.getIdentifierInfo());
+  VarDecl *VD = dyn_cast_or_null<VarDecl>(
+      S.LookupSingleName(P.getCurScope(), DN, SourceLocation(),
+                         Sema::LookupNameKind::LookupOrdinaryName));
+  if (!VD) {
+    VD = dyn_cast_or_null<VarDecl>(
+        S.LookupSingleName(S.TUScope, DN, SourceLocation(),
+                           Sema::LookupNameKind::LookupOrdinaryName));
+  }
+  return VD;
 }
 
 static CallExpr *CreateCallExpr(const ASTContext &AST, const SourceLocation &SL,
@@ -220,16 +222,13 @@ static bool FindLibNompFunctionDecl(llvm::StringRef LNF, Sema &S) {
 Expr *Parser::ParseNompExpr() {
   ExprResult LHS = ParseAssignmentExpression();
   ExprResult ER = ParseRHSOfBinaryExpression(LHS, prec::Assignment);
-  if (ER.isUsable())
-    return ER.getAs<Expr>();
-  return nullptr;
+  return ER.isUsable() ? ER.getAs<Expr>() : nullptr;
 }
 
 void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
                                           llvm::StringRef Pragma) {
   while (Tok.isNot(tok::r_paren) and Tok.isNot(tok::annot_pragma_nomp_end)) {
-    Expr *E = ParseNompExpr();
-    if (E)
+    if (Expr *E = ParseNompExpr())
       EL.push_back(E);
     if (Tok.isNot(tok::r_paren)) {
       if (!TryConsumeToken(tok::comma))
@@ -249,17 +248,14 @@ static Expr *ExprToArgc(Expr *E, ASTContext &AST) {
     return nullptr;
   }
 
-  QualType QT = getIntType(AST);
-  Expr *Argc = nullptr;
-
   // If this is a DRE, we need to do LValueToRvalue cast. Otherwise, we just
   // set the Argc to E.
+  QualType QT = getIntType(AST);
+  Expr *Argc = E;
   if (DeclRefExpr *DRE = dyn_cast_or_null<DeclRefExpr>(E)) {
     Argc = ImplicitCastExpr::Create(
         AST, DRE->getType(), CastKind::CK_LValueToRValue, DRE, nullptr,
         ExprValueKind::VK_PRValue, FPOptionsOverride());
-  } else {
-    Argc = E;
   }
 
   // If this is a floating type, we need to do FloatingToIntegral cast.
@@ -290,31 +286,32 @@ static Expr *ExprToArgv(Expr *E, ASTContext &AST) {
 
   // So, we first check if this is a DeclRefExpr since we are only accepting
   // variables to pointer or array types.
-  bool isa_variable = false;
+  bool IsVariable = false;
   if (DeclRefExpr *DRE = dyn_cast_or_null<DeclRefExpr>(E)) {
     // If this is a DeclRefExpr, we need to check if it is a variable.
     if (isa<VarDecl>(DRE->getDecl()))
-      isa_variable = true;
+      IsVariable = true;
   }
-  check_cond(isa_variable);
+  check_cond(IsVariable);
 
   // Then, check if it is a variable of an array or a pointer type.
-  bool isa_array_or_pointer = false;
+  bool IsArrayOrPointer = false;
   const Type *T = E->getType().getTypePtr();
   if (T->isPointerType() || T->isArrayType())
-    isa_array_or_pointer = true;
-  check_cond(isa_array_or_pointer);
+    IsArrayOrPointer = true;
+  check_cond(IsArrayOrPointer);
 
   // If it is an array or a pointer, then we check if the base type is a
   // C-string.
-  bool isa_cstring = false;
+  bool IsCString = false;
   const Type *B = T->getPointeeOrArrayElementType();
   if (B->isPointerType() && B->getPointeeType()->isCharType())
-    isa_cstring = true;
-  check_cond(isa_cstring);
+    IsCString = true;
+  check_cond(IsCString);
 
-  QualType QT = AST.getPointerType(AST.getConstType(AST.CharTy));
-  QT = AST.getPointerType(QT);
+  // Okay, we have an array of C-strings or a pointer to an array of C-strings.
+  QualType QT =
+      AST.getPointerType(AST.getPointerType(AST.getConstType(AST.CharTy)));
   // If this is an array, we need to do ArrayToPointerDecay cast.
   if (T->isArrayType()) {
     return ImplicitCastExpr::Create(AST, QT, CastKind::CK_ArrayToPointerDecay,
@@ -357,11 +354,12 @@ StmtResult Parser::ParseNompInit(const SourceLocation &SL) {
     return StmtEmpty();
   }
 
-  // Conver Expr* to function arguments.
+  // Convert Expr* to function arguments.
   llvm::SmallVector<Expr *, 2> FuncArgs;
-  Expr *Argv = InitArgs.pop_back_val(), *Argc = InitArgs.pop_back_val();
-  FuncArgs.push_back(ExprToArgc(Argc, AST));
-  FuncArgs.push_back(ExprToArgv(Argv, AST));
+  Expr *Argv = ExprToArgv(InitArgs.pop_back_val(), AST);
+  Expr *Argc = ExprToArgc(InitArgs.pop_back_val(), AST);
+  FuncArgs.push_back(Argc);
+  FuncArgs.push_back(Argv);
 
   ConsumeAnnotationToken(); // tok::annot_pragma_nomp_end
 
@@ -380,9 +378,7 @@ StmtResult Parser::ParseNompUpdate(const SourceLocation &SL) {
 
   // Direction should be one of the following: "to", "from", "alloc", "free".
   // So, if the token is not an identifier, it is an error.
-  UpdateDirection dirn = UpdateInvalid;
-  if (Tok.is(tok::identifier))
-    dirn = GetUpdateDirection(Tok.getIdentifierInfo()->getName());
+  UpdateDirection dirn = GetUpdateDirection(Tok);
   if (dirn == UpdateInvalid) {
     NompHandleError(diag::err_nomp_invalid_update_direction, Tok, *this);
     return StmtEmpty();
@@ -664,29 +660,29 @@ public:
 
 } // namespace
 
-static void GetKernel(std::string &KnlStr, const std::string &KnlName,
+static void GetKernel(std::string &Kernel, const std::string &KernelName,
                       const std::set<VarDecl *> &EV, const ForStmt *FS,
                       const clang::LangOptions &Opts) {
   clang::PrintingPolicy Policy(Opts);
   Policy.SuppressInitializers = false;
   Policy.PrintCanonicalTypes = true;
 
-  llvm::raw_string_ostream KnlStream(KnlStr);
-  KnlStream << "void " << KnlName << "(";
+  llvm::raw_string_ostream OS(Kernel);
+  OS << "void " << KernelName << "(";
 
   unsigned size = EV.size(), count = 0;
   for (auto V : EV) {
-    V->print(KnlStream, Policy, 0);
+    V->print(OS, Policy, 0);
     count++;
     if (count < size)
-      KnlStream << ",";
+      OS << ",";
     else
-      KnlStream << ")";
+      OS << ")";
   }
-  KnlStream << " {\n";
+  OS << " {\n";
 
-  FS->printPretty(KnlStream, nullptr, Policy, 0);
-  KnlStream << "}";
+  FS->printPretty(OS, nullptr, Policy, 0);
+  OS << "}";
 }
 
 static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
