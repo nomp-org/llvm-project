@@ -570,6 +570,97 @@ public:
   }
 }; // ExternalVariableFinder
 
+class PreprocessVisitor final : public StmtVisitor<PreprocessVisitor, void> {
+  std::set<VarDecl *> VD_, DRE_;
+  std::set<std::string> Names_;
+
+public:
+  PreprocessVisitor(ForStmt *FS) { VisitForStmt(FS); }
+
+  void VisitCompoundStmt(CompoundStmt *S) {
+    for (auto *B : S->body())
+      Visit(B);
+  }
+
+  void VisitForStmt(ForStmt *S) {
+    if (S->getInit())
+      Visit(S->getInit());
+    if (S->getCond())
+      Visit(S->getCond());
+    if (S->getInc())
+      Visit(S->getInc());
+    Visit(S->getBody());
+  }
+
+  void VisitDeclStmt(DeclStmt *S) {
+    for (auto D : S->decls())
+      VisitDecl(D);
+  }
+
+  void VisitDecl(Decl *D) {
+    if (auto *VD = dyn_cast<VarDecl>(D))
+      VisitVarDecl(VD);
+    if (auto *FD = dyn_cast<FunctionDecl>(D))
+      NompHandleError(diag::err_nomp_func_decl_in_kernel, FD->getLocation(),
+                      FD->getASTContext());
+  }
+
+  void VisitVarDecl(VarDecl *VD) {
+    auto name = VD->getNameAsString();
+    if (Names_.find(name) != Names_.end()) {
+      name = name + "_";
+      IdentifierInfo &I = VD->getASTContext().Idents.get(name);
+      DeclarationName DN(&I);
+      VD->setDeclName(DN);
+    }
+    Names_.insert(name);
+
+    VD_.insert(VD->getCanonicalDecl());
+    if (VD->hasInit())
+      Visit(VD->getInit());
+  }
+
+  void VisitBinaryOperator(BinaryOperator *O) {
+    Visit(O->getLHS());
+    Visit(O->getRHS());
+  }
+
+  void VisitArraySubscriptExpr(ArraySubscriptExpr *E) {
+    Visit(E->getLHS());
+    Visit(E->getRHS());
+  }
+
+  void VisitImplicitCastExpr(ImplicitCastExpr *E) { Visit(E->getSubExpr()); }
+
+  void VisitParenExpr(ParenExpr *E) { Visit(E->getSubExpr()); }
+
+  void VisitConditionalOperator(ConditionalOperator *E) {
+    Visit(E->getCond());
+    Visit(E->getLHS());
+    Visit(E->getRHS());
+  }
+
+  void VisitIfStmt(IfStmt *S) {
+    Visit(S->getCond());
+    Visit(S->getThen());
+    if (S->hasElseStorage())
+      Visit(S->getElse());
+  }
+
+  void VisitDeclRefExpr(DeclRefExpr *DRE) {
+    if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
+      DRE_.insert(VD->getCanonicalDecl());
+
+    if (auto *FD = dyn_cast<FunctionDecl>(DRE->getDecl()))
+      NompHandleError(diag::err_nomp_func_call_in_kernel, FD->getLocation(),
+                      FD->getASTContext());
+  }
+
+  void GetExternalVarDecls(std::set<VarDecl *> &EVD) {
+    std::set_difference(DRE_.begin(), DRE_.end(), VD_.begin(), VD_.end(),
+                        std::inserter(EVD, EVD.begin()));
+  }
+}; // PreprocessVisitor
 
 } // namespace
 

@@ -1550,6 +1550,10 @@ def err_nomp_invalid_number_of_args: Error<
   "Only %0 argument(s) given to nomp %1 which expects %2 arguments at line %3">;
 def err_nomp_invalid_expression: Error<
   "Unable to parse expression at line %0 column %1">;
+def err_nomp_func_decl_in_kernel: Error<
+  "Function declaration inside kernel is not allowed at line %0 column %1">;
+def err_nomp_func_call_in_kernel: Error<
+  "Function call inside kernel is not allowed at line %0 column %1">;
 
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<
