@@ -528,7 +528,9 @@ public:
   void VisitVarDecl(VarDecl *VD) {
     auto name = VD->getNameAsString();
     if (Names_.find(name) != Names_.end()) {
-      name = name + "_";
+      do {
+        name = name + "_";
+      } while (Names_.find(name) != Names_.end());
       IdentifierInfo &I = VD->getASTContext().Idents.get(name);
       DeclarationName DN(&I);
       VD->setDeclName(DN);
