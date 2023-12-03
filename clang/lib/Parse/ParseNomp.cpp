@@ -52,9 +52,10 @@ enum ForClause {
   ForClauseJit = 0,
   ForClauseTransform = 1,
   ForClauseAnnotate = 2,
-  ForClauseReduce = 3
+  ForClauseReduce = 3,
+  ForClauseName = 4
 };
-std::string ForClauses[4] = {"jit", "transform", "annotate", "reduce"};
+std::string ForClauses[16] = {"jit", "transform", "annotate", "reduce", "name"};
 
 // FIXME: Following enum UpdateDirection should be based on `nomp.h` and
 // shouldn't be hard-coded here.
@@ -130,6 +131,7 @@ static inline ForClause GetForClause(const llvm::StringRef Pragma) {
       .Case("transform", ForClauseTransform)
       .Case("annotate", ForClauseAnnotate)
       .Case("reduce", ForClauseReduce)
+      .Case("name", ForClauseName)
       .Default(ForClauseInvalid);
 }
 
@@ -611,15 +613,16 @@ static void GetKernel(std::string &Kernel, const std::string &KernelName,
   OS << "}";
 }
 
-static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
-                              ASTContext &AST, VarDecl *ID, VarDecl *VKNL,
-                              VarDecl *VCLS, std::set<VarDecl *> &EV,
-                              const std::vector<std::string> &reductions) {
+static void
+CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts, ASTContext &AST,
+                  VarDecl *ID, VarDecl *VKNL, VarDecl *VCLS,
+                  std::set<VarDecl *> &EV,
+                  const std::vector<std::string> &reductionVariables) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
   SourceLocation SL = SourceLocation();
 
-  // 1st argument is '&id' -- output argument which assigns an unique id to each
-  // kernel.
+  // 1st argument is '&id' -- output argument which assigns an unique id to
+  // each kernel.
   DeclRefExpr *DRE =
       DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), ID,
                           false, SourceLocation(), ID->getType(), VK_LValue);
@@ -680,11 +683,11 @@ static void CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts,
           UETT_SizeOf, TSI, AST.getSizeType(), SourceLocation(),
           SourceLocation()));
 
-      Type *T1 = const_cast<Type *>(T);
       // Check if the variable is part of a reduction since we need to pass the
       // pointee type or base element type in that case.
-      if (std::find(reductions.begin(), reductions.end(), name) !=
-          reductions.end())
+      Type *T1 = const_cast<Type *>(T);
+      if (std::find(reductionVariables.begin(), reductionVariables.end(),
+                    name) != reductionVariables.end())
         T1 = const_cast<Type *>(QT.getTypePtrOrNull());
 
       // Find the nomp type.
@@ -748,19 +751,24 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 }
 
 int Parser::ParseNompForClauses(std::vector<std::string> &clauses,
-                                std::vector<std::string> &reductions) {
+                                std::vector<std::string> &reductionVariables,
+                                std::string &kernelName) {
   // Process auxiliary pragmas (i.e., clauses) supported after `#pragma nomp
   // for`. Mainly we want to support `annotate`, `transform` and `jit` for the
   // time being. All of the above should be parsed as an identifier token.
-  unsigned transformDetected = 0, reductionDetected = 0;
+  bool transformDetected = 0;
+  bool reductionDetected = 0;
+  bool nameDetected = 0;
+
+  // Default kernel name is "_nomp_kernel_l<line number>". If the user
+  // provides a name, we will use that instead.
+  FullSourceLoc Loc(Tok.getLocation(), getPreprocessor().getSourceManager());
+  kernelName = "_nomp_kernel_l" + std::to_string(Loc.getSpellingLineNumber());
+
   while (Tok.isNot(tok::annot_pragma_nomp_end)) {
     ForClause clause = ForClauseInvalid;
-    if (Tok.is(tok::identifier)) {
+    if (Tok.is(tok::identifier))
       clause = GetForClause(Tok.getIdentifierInfo()->getName());
-    } else {
-      NompHandleError(diag::err_nomp_identifier_expected, Tok, *this);
-      return 1;
-    }
 
     // Should be a valid for clause -- otherwise print error and exit.
     if (clause == ForClauseInvalid) {
@@ -771,15 +779,33 @@ int Parser::ParseNompForClauses(std::vector<std::string> &clauses,
 
     // `transform` can only be present once -- if there are two transform
     // clauses, it is an error.
-    if (transformDetected && clause == ForClauseTransform) {
-      NompHandleError(diag::err_nomp_repeated_transform_clause, Tok, *this);
-      return 1;
+    if (clause == ForClauseTransform) {
+      if (transformDetected) {
+        NompHandleError(diag::err_nomp_repeated_clause, Tok, *this,
+                        "transform");
+        return 1;
+      }
+      transformDetected = true;
     }
-    // `reduce` can only be present once -- if there are two reduce
-    // clauses, it is an error.
-    if (reductionDetected && clause == ForClauseReduce) {
-      NompHandleError(diag::err_nomp_repeated_reduction_clause, Tok, *this);
-      return 1;
+
+    // `reduce` can only be present once -- if there are two reduce clauses,
+    // it is an error.
+    if (clause == ForClauseReduce) {
+      if (reductionDetected) {
+        NompHandleError(diag::err_nomp_repeated_clause, Tok, *this, "reduce");
+        return 1;
+      }
+      reductionDetected = true;
+    }
+
+    // `name` can only be present once -- if there are two name clauses,
+    // it is an error.
+    if (clause == ForClauseName) {
+      if (nameDetected) {
+        NompHandleError(diag::err_nomp_repeated_clause, Tok, *this, "name");
+        return 1;
+      }
+      nameDetected = true;
     }
 
     // Consume the clause and the following "(".
@@ -790,47 +816,67 @@ int Parser::ParseNompForClauses(std::vector<std::string> &clauses,
       return 1;
     }
 
-    // `transform`, `annotate` and `reduce should be followed by two arguments.
-    // `jit` takes a variable name. In any case, we should get a string
-    // literal next. FIXME: This can be a string variable as well. Need to add
-    // support for that.
+    // `name` and `jit` takes a single string argument. `transform`, `annotate`
+    // and `reduce should be followed by two arguments. In any case, we should
+    // get a string literal next.
+    // FIXME: This can be a string variable as well. Need to support that.
     if (Tok.isNot(tok::string_literal)) {
       NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
       return 1;
     }
 
-    // Store the clause, string literal and consume the token.
-    clauses.push_back(ForClauses[clause]);
-    std::string SL0 =
-        std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
-    clauses.push_back(SL0);
-    if (clause == ForClauseReduce)
-      reductions.push_back(SL0);
-
-    ConsumeToken();
-
-    // If we are handling an `annotate`, `transform` or `reduce` clause, we
-    // should expect one more string literal after a comma. FIXME: This can be
-    // a string variable as well. Need to add support for that. In case of a
-    // reduction, this should be just "+" without double quotations.
-    if (clause == ForClauseAnnotate || clause == ForClauseTransform ||
-        clause == ForClauseReduce) {
-      if (!TryConsumeToken(tok::comma)) {
-        NompHandleError(diag::err_nomp_comma_expected, Tok, *this);
-        return 1;
-      }
-      if (Tok.isNot(tok::string_literal)) {
-        NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
-        return 1;
-      }
-
-      std::string SL1 =
-          std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
-      clauses.push_back(SL1);
-
+    // Get the string literal as a string. Consume the string literal token.
+    std::string arg0;
+    {
+      arg0 = std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2);
       ConsumeToken();
     }
 
+    // We don't need to pass `name` clause to libnomp since we hard code the
+    // kernel name in to the kernel string itself. So we are done.
+    if (clause == ForClauseName) {
+      kernelName = arg0;
+      goto consume_r_paren;
+    }
+
+    // If the clause is not `name`, store the clause, and the string literal.
+    {
+      clauses.push_back(ForClauses[clause]);
+      clauses.push_back(arg0);
+    }
+
+    // We are done if the clause is `jit`.
+    if (clause == ForClauseJit)
+      goto consume_r_paren;
+
+    // If the clause is `reduce`, store the string literal in the
+    // reductionVariables so we can easily check if a variable is part of a
+    // reduction or not later.
+    if (clause == ForClauseReduce)
+      reductionVariables.push_back(arg0);
+
+    // If we are handling an `annotate`, `transform` or `reduce` clause, we
+    // should expect one more string literal after a comma.
+    // FIXME: This can be a string variable as well. Need to support that.
+    // In case of a reduction, this should be just "+" or "*" without double
+    // quotations.
+    if (!TryConsumeToken(tok::comma)) {
+      NompHandleError(diag::err_nomp_comma_expected, Tok, *this);
+      return 1;
+    }
+    if (Tok.isNot(tok::string_literal)) {
+      NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
+      return 1;
+    }
+
+    // Get the string literal as a string. Consume the string literal token.
+    {
+      clauses.push_back(
+          std::string(Tok.getLiteralData() + 1, Tok.getLength() - 2));
+      ConsumeToken();
+    }
+
+  consume_r_paren:
     if (!TryConsumeToken(tok::r_paren)) {
       NompHandleError(diag::err_nomp_rparen_expected, Tok, *this,
                       ForClauses[clause]);
@@ -849,8 +895,9 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
 
-  std::vector<std::string> clauses, reductions;
-  if (ParseNompForClauses(clauses, reductions))
+  std::vector<std::string> clauses, reductionVariables;
+  std::string kernelName;
+  if (ParseNompForClauses(clauses, reductionVariables, kernelName))
     return StmtEmpty();
 
   // Check if the next token is tok::kw_for. If not, exit.
@@ -869,7 +916,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   PPV.GetExternalVarDecls(EV);
 
   std::string Knl;
-  GetKernel(Knl, "loopy_kernel", EV, FS, AST.getLangOpts());
+  GetKernel(Knl, kernelName, EV, FS, AST.getLangOpts());
 
   // We are going to create all our statements (declarations, function calls)
   // into the following vector and then create a compound statement out of it.
@@ -953,7 +1000,7 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the function arguments to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS, EV, reductions);
+  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS, EV, reductionVariables);
 
   // Next we create AST node for nomp_run().
   CreateNompRunCall(Stmts, AST, ID, EV);

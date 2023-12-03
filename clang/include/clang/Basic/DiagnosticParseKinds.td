@@ -1541,10 +1541,8 @@ def err_nomp_invalid_update_direction: Error<
   "Invalid direction for nomp update at line %0, column %1">;
 def err_nomp_invalid_for_clause: Error<
   "Invalid auxiliary for clause %0 at line %1, column %2">;
-def err_nomp_repeated_transform_clause: Error<
-  "Transform caluse is repeated at line %0, column %1">;
-def err_nomp_repeated_reduction_clause: Error<
-  "Reduction caluse is repeated at line %0, column %1">;
+def err_nomp_repeated_clause: Error<
+  "Auxiliary clause '%0' is repeated at line %1, column %2">;
 def err_nomp_invalid_directive: Error<"Invalid nomp directive at line %0 column %1">;
 def err_nomp_invalid_number_of_args: Error<
   "Only %0 argument(s) given to nomp %1 which expects %2 arguments at line %3">;
