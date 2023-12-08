@@ -3452,6 +3452,7 @@ private:
   StmtResult ParseNompUpdate(const SourceLocation &sLoc);
   int ParseNompForClauses(std::vector<std::string> &clauses,
                           std::vector<std::string> &reductionVariables,
+                          std::vector<std::string> &jitVariables,
                           std::string &kernelName);
   StmtResult ParseNompFor(const SourceLocation &sLoc);
   StmtResult ParseNompSync(const SourceLocation &sLoc);

@@ -76,6 +76,10 @@ enum ArgType {
   TypePointer = 16384
 };
 
+// FIXME: Following enum ArgProperties should be based on `nomp.h` and
+// shouldn't be hard-coded here.
+enum ArgProperties { PropertyJit = 1 };
+
 //==============================================================================
 // Helper functions to generate C types.
 //
@@ -245,7 +249,7 @@ void Parser::ParseNompExprListUntilRParen(llvm::SmallVector<Expr *, 16> &EL,
 static Expr *ExprToArgc(Expr *E, ASTContext &AST) {
   const Type *T = E->getType().getTypePtr();
   if (!T->isIntegerType() && !T->isFloatingType()) {
-    NompHandleError(diag::err_nomp_function_arg_invalid, E->getExprLoc(), AST,
+    NompHandleError(diag::err_nomp_invalid_function_arg, E->getExprLoc(), AST,
                     "Parameter `argc` of nomp_init() must be an Integer type.");
     return nullptr;
   }
@@ -274,7 +278,7 @@ static Expr *ExprToArgv(Expr *E, ASTContext &AST) {
 #define check_cond(cond)                                                       \
   {                                                                            \
     if (!cond) {                                                               \
-      NompHandleError(diag::err_nomp_function_arg_invalid, E->getExprLoc(),    \
+      NompHandleError(diag::err_nomp_invalid_function_arg, E->getExprLoc(),    \
                       AST,                                                     \
                       "Parameter `argv` of nomp_init() must be an variable "   \
                       "which reference an array of C-strings or "              \
@@ -617,7 +621,8 @@ static void
 CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts, ASTContext &AST,
                   VarDecl *ID, VarDecl *VKNL, VarDecl *VCLS,
                   std::set<VarDecl *> &EV,
-                  const std::vector<std::string> &reductionVariables) {
+                  const std::vector<std::string> &reductionVariables,
+                  const std::vector<std::string> &jitVariables) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
   SourceLocation SL = SourceLocation();
 
@@ -657,52 +662,82 @@ CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts, ASTContext &AST,
 
   QualType StrTy = AST.getPointerType(AST.CharTy);
   for (auto V : EV) {
-    QualType QT = V->getType();
+    const QualType QT = V->getType();
     const Type *T = QT.getTypePtrOrNull();
-    if (T) {
-      // Name of the variable as a string.
-      std::string name = V->getNameAsString();
-      QualType NameStrTy = getConstantArrayType(
-          AST, AST.CharTy, name.size() + 1, ArrayType::Normal);
-      StringLiteral *SL =
-          StringLiteral::Create(AST, name, StringLiteral::Ordinary, false,
-                                NameStrTy, SourceLocation());
-      ImplicitCastExpr *ICE =
-          ImplicitCastExpr::Create(AST, StrTy, CK_ArrayToPointerDecay, SL,
-                                   nullptr, VK_PRValue, FPOptionsOverride());
-      FuncArgs.push_back(ICE);
+    if (!T) {
+      NompHandleError(diag::err_nomp_invalid_function_arg, V->getLocation(),
+                      AST,
+                      "Unsupported type for argument: " + V->getNameAsString());
+    }
 
-      if (T->isArrayType())
-        QT = AST.getBaseElementType(dyn_cast<ArrayType>(T));
-      else if (T->isPointerType())
-        QT = dyn_cast<PointerType>(T)->getPointeeType();
-      TypeSourceInfo *TSI = AST.getTrivialTypeSourceInfo(QT);
+    // We first pass the name of the argument as a string:
+    const std::string name = V->getNameAsString();
+    const QualType NameStrTy = getConstantArrayType(
+        AST, AST.CharTy, name.size() + 1, ArrayType::Normal);
+    StringLiteral *SL = StringLiteral::Create(
+        AST, name, StringLiteral::Ordinary, false, NameStrTy, SourceLocation());
+    ImplicitCastExpr *ICE =
+        ImplicitCastExpr::Create(AST, StrTy, CK_ArrayToPointerDecay, SL,
+                                 nullptr, VK_PRValue, FPOptionsOverride());
+    FuncArgs.push_back(ICE);
 
-      // sizeof(variable)
-      FuncArgs.push_back(new (AST) UnaryExprOrTypeTraitExpr(
-          UETT_SizeOf, TSI, AST.getSizeType(), SourceLocation(),
-          SourceLocation()));
+    QualType QBT = QT;
+    if (T->isArrayType())
+      QBT = AST.getBaseElementType(dyn_cast<ArrayType>(T));
+    if (T->isPointerType())
+      QBT = dyn_cast<PointerType>(T)->getPointeeType();
+    TypeSourceInfo *TSI = AST.getTrivialTypeSourceInfo(QBT);
 
-      // Check if the variable is part of a reduction since we need to pass the
-      // pointee type or base element type in that case.
-      Type *T1 = const_cast<Type *>(T);
-      if (std::find(reductionVariables.begin(), reductionVariables.end(),
-                    name) != reductionVariables.end())
-        T1 = const_cast<Type *>(QT.getTypePtrOrNull());
+    // Then: sizeof(argument)
+    FuncArgs.push_back(
+        new (AST) UnaryExprOrTypeTraitExpr(UETT_SizeOf, TSI, AST.getSizeType(),
+                                           SourceLocation(), SourceLocation()));
 
-      // Find the nomp type.
-      int type = TypeInt * T1->isSignedIntegerType() +
-                 TypeFloat * T1->isFloatingType() +
-                 TypeUInt * T1->isUnsignedIntegerType() +
-                 TypePointer * (T1->isPointerType() || T1->isArrayType());
+    // Third, we pass the nomp type of the argument. We embed various argument
+    // properties in the type itself. For example, if the argument is a jit
+    // argument, we embed the property `jit` in the type.
+    //
+    // Also, Check if the variable is part of a reduction since we need to pass
+    // the pointee type or base element type in that case.
+    Type *T1 = const_cast<Type *>(T);
+    if (std::find(reductionVariables.begin(), reductionVariables.end(), name) !=
+        reductionVariables.end())
+      T1 = const_cast<Type *>(QBT.getTypePtrOrNull());
 
-      if (type == 0) {
-        NompHandleError(diag::err_nomp_function_arg_invalid, V->getLocation(),
-                        AST);
+    int type = TypeInt * T1->isSignedIntegerType() +
+               TypeFloat * T1->isFloatingType() +
+               TypeUInt * T1->isUnsignedIntegerType() +
+               TypePointer * (T1->isPointerType() || T1->isArrayType());
+
+    if (type == 0) {
+      NompHandleError(diag::err_nomp_invalid_function_arg, V->getLocation(),
+                      AST, "Unsupported type for argument: " + name);
+    }
+
+    if (std::find(jitVariables.begin(), jitVariables.end(), name) !=
+        jitVariables.end()) {
+      if (type == TypePointer) {
+        NompHandleError(diag::err_nomp_invalid_arg_property, V->getLocation(),
+                        AST,
+                        "Argument: " + name +
+                            " cannot have the property `jit` in nomp_jit() "
+                            "since it is a pointer.");
       }
+      type = type | PropertyJit;
+    }
 
-      FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, type),
-                                                IntTy, SourceLocation()));
+    FuncArgs.push_back(IntegerLiteral::Create(AST, llvm::APInt(32, type), IntTy,
+                                              SourceLocation()));
+
+    // Fourth, If the argument has the property `jit`, we need to pass the
+    // pointer to the argument.
+    if (type & PropertyJit) {
+      DeclRefExpr *DRE =
+          DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
+                              V, false, SourceLocation(), QT, VK_LValue);
+      FuncArgs.push_back(UnaryOperator::Create(
+          AST, DRE, UO_AddrOf, AST.getPointerType(QT), VK_PRValue, OK_Ordinary,
+          SourceLocation(), false, FPOptionsOverride()));
     }
   }
 
@@ -713,7 +748,8 @@ CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts, ASTContext &AST,
 
 static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                               ASTContext &AST, VarDecl *ID,
-                              std::set<VarDecl *> &EV) {
+                              std::set<VarDecl *> &EV,
+                              const std::vector<std::string> &jitVariables) {
   llvm::SmallVector<Expr *, 16> FuncArgs;
 
   // First argument to nomp_run() is 'id' -- input argument which passes an
@@ -752,9 +788,10 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
 
 int Parser::ParseNompForClauses(std::vector<std::string> &clauses,
                                 std::vector<std::string> &reductionVariables,
+                                std::vector<std::string> &jitVariables,
                                 std::string &kernelName) {
-  // Process auxiliary pragmas (i.e., clauses) supported after `#pragma nomp
-  // for`. Mainly we want to support `annotate`, `transform` and `jit` for the
+  // Process auxiliary clauses supported after `#pragma nomp for`. Mainly
+  // we want to support `annotate`, `transform` and `jit` for the
   // time being. All of the above should be parsed as an identifier token.
   bool transformDetected = 0;
   bool reductionDetected = 0;
@@ -817,8 +854,8 @@ int Parser::ParseNompForClauses(std::vector<std::string> &clauses,
     }
 
     // `name` and `jit` takes a single string argument. `transform`, `annotate`
-    // and `reduce should be followed by two arguments. In any case, we should
-    // get a string literal next.
+    // and `reduce` should be followed by two arguments. In any case, we
+    // should get a string literal next.
     // FIXME: This can be a string variable as well. Need to support that.
     if (Tok.isNot(tok::string_literal)) {
       NompHandleError(diag::err_nomp_string_literal_expected, Tok, *this);
@@ -839,15 +876,20 @@ int Parser::ParseNompForClauses(std::vector<std::string> &clauses,
       goto consume_r_paren;
     }
 
-    // If the clause is not `name`, store the clause, and the string literal.
+    // If the clause is `jit`, store the string literal in the jitVariables
+    // so we can easily check if a variable should be passed to the kernel or
+    // not later and consume the ")".
+    if (clause == ForClauseJit) {
+      jitVariables.push_back(arg0);
+      goto consume_r_paren;
+    }
+
+    // If the clause is not `name` or `jit`, store the clause, and the
+    // string literal.
     {
       clauses.push_back(ForClauses[clause]);
       clauses.push_back(arg0);
     }
-
-    // We are done if the clause is `jit`.
-    if (clause == ForClauseJit)
-      goto consume_r_paren;
 
     // If the clause is `reduce`, store the string literal in the
     // reductionVariables so we can easily check if a variable is part of a
@@ -895,9 +937,10 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
   Sema &S = getActions();
   ASTContext &AST = S.getASTContext();
 
-  std::vector<std::string> clauses, reductionVariables;
+  std::vector<std::string> clauses, reductionVariables, jitVariables;
   std::string kernelName;
-  if (ParseNompForClauses(clauses, reductionVariables, kernelName))
+  if (ParseNompForClauses(clauses, reductionVariables, jitVariables,
+                          kernelName))
     return StmtEmpty();
 
   // Check if the next token is tok::kw_for. If not, exit.
@@ -1000,10 +1043,11 @@ StmtResult Parser::ParseNompFor(const SourceLocation &SL) {
 
   // Next we create the AST node for the function call nomp_jit(). To do that
   // we create the function arguments to nomp_jit().
-  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS, EV, reductionVariables);
+  CreateNompJitCall(Stmts, AST, ID, VKnl, CLS, EV, reductionVariables,
+                    jitVariables);
 
   // Next we create AST node for nomp_run().
-  CreateNompRunCall(Stmts, AST, ID, EV);
+  CreateNompRunCall(Stmts, AST, ID, EV, jitVariables);
 
   return CompoundStmt::Create(AST, ArrayRef<Stmt *>(Stmts), FPOptionsOverride(),
                               SL, SL);
