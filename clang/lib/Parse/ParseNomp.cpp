@@ -762,22 +762,28 @@ static void CreateNompRunCall(llvm::SmallVector<Stmt *, 16> &Stmts,
                                DRE, nullptr, VK_PRValue, FPOptionsOverride()));
 
   for (auto V : EV) {
-    QualType QT = V->getType();
+    // If the variable is a jit variable, we don't need to pass it to
+    // nomp_run() since it is already passed to nomp_jit().
+    const std::string name = V->getNameAsString();
+    if (std::find(jitVariables.begin(), jitVariables.end(), name) !=
+        jitVariables.end()) {
+      continue;
+    }
+
+    // Otherwise, pass a pointer to variable to nomp_run().
+    const QualType QT = V->getType();
     const Type *T = QT.getTypePtrOrNull();
-    if (T) {
-      // Pointer to variable
-      DeclRefExpr *DRE =
-          DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(),
-                              V, false, SourceLocation(), QT, VK_LValue);
-      if (T->isPointerType()) {
-        FuncArgs.push_back(
-            ImplicitCastExpr::Create(AST, QT, CastKind::CK_LValueToRValue, DRE,
-                                     nullptr, VK_PRValue, FPOptionsOverride()));
-      } else {
-        FuncArgs.push_back(UnaryOperator::Create(
-            AST, DRE, UO_AddrOf, AST.getPointerType(QT), VK_PRValue,
-            OK_Ordinary, SourceLocation(), false, FPOptionsOverride()));
-      }
+    DeclRefExpr *DRE =
+        DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), SourceLocation(), V,
+                            false, SourceLocation(), QT, VK_LValue);
+    if (T->isPointerType()) {
+      FuncArgs.push_back(
+          ImplicitCastExpr::Create(AST, QT, CastKind::CK_LValueToRValue, DRE,
+                                   nullptr, VK_PRValue, FPOptionsOverride()));
+    } else {
+      FuncArgs.push_back(UnaryOperator::Create(
+          AST, DRE, UO_AddrOf, AST.getPointerType(QT), VK_PRValue, OK_Ordinary,
+          SourceLocation(), false, FPOptionsOverride()));
     }
   }
 
