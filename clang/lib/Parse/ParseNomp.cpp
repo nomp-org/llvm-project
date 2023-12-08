@@ -72,8 +72,8 @@ enum UpdateDirection {
 enum ArgType {
   TypeInt = 2048,
   TypeUInt = 4096,
-  TypeFloat = 6144,
-  TypePointer = 8192
+  TypeFloat = 8192,
+  TypePointer = 16384
 };
 
 //==============================================================================
