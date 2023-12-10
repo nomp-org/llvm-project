@@ -685,7 +685,7 @@ CreateNompJitCall(llvm::SmallVector<Stmt *, 16> &Stmts, ASTContext &AST,
     if (T->isArrayType())
       QBT = AST.getBaseElementType(dyn_cast<ArrayType>(T));
     if (T->isPointerType())
-      QBT = dyn_cast<PointerType>(T)->getPointeeType();
+      QBT = T->getPointeeType();
     TypeSourceInfo *TSI = AST.getTrivialTypeSourceInfo(QBT);
 
     // Then: sizeof(argument)
